@@ -1,0 +1,29 @@
+{
+  "doctype": "Dashboard",
+  "dashboard_name": "PDC Overview",
+  "module": "Accounts",
+  "charts": [
+    {
+      "title": "PDC Status Count",
+      "chart_type": "Pie",
+      "based_on": "Report",
+      "report_name": "PDC Status Summary",
+      "value_field": "count",
+      "category_field": "pdc_status"
+    },
+    {
+      "title": "PDC Amount per Status",
+      "chart_type": "Bar",
+      "based_on": "Report",
+      "report_name": "PDC Status Summary",
+      "value_field": "amount",
+      "category_field": "pdc_status"
+    }
+  ],
+  "cards": [
+    {"title":"Pending PDCs","type":"Report Card","report":"Pending PDCs"},
+    {"title":"Ready for Clearance","type":"Report Card","report":"Ready PDCs"},
+    {"title":"Cleared PDCs","type":"Report Card","report":"Cleared PDCs"},
+    {"title":"Bounced PDCs","type":"Report Card","report":"Bounced PDCs"}
+  ]
+}

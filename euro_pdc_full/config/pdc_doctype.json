@@ -1,0 +1,18 @@
+{
+  "doctype": "DocType",
+  "name": "PDC",
+  "module": "Accounts",
+  "fields": [
+    {"fieldname":"payment_entry","label":"Payment Entry","fieldtype":"Link","options":"Payment Entry","reqd":1},
+    {"fieldname":"customer","label":"Customer","fieldtype":"Link","options":"Customer","reqd":1},
+    {"fieldname":"invoice","label":"Invoice","fieldtype":"Link","options":"Sales Invoice"},
+    {"fieldname":"amount","label":"Amount","fieldtype":"Currency","reqd":1},
+    {"fieldname":"reference_date","label":"Cheque Date","fieldtype":"Date","reqd":1},
+    {"fieldname":"bank_name","label":"Bank Name","fieldtype":"Data"},
+    {"fieldname":"pdc_status","label":"PDC Status","fieldtype":"Select","options":"Pending\nReady for Clearance\nApproved for Clearance\nCleared\nBounced","reqd":1},
+    {"fieldname":"bounced_reason","label":"Bounced Reason","fieldtype":"Data"},
+    {"fieldname":"whatsapp_sent","label":"WhatsApp Sent","fieldtype":"Check"},
+    {"fieldname":"accounts_manager_notified","label":"Accounts Manager Notified","fieldtype":"Check"}
+  ],
+  "permissions":[{"role":"Accounts Manager","read":1,"write":1,"create":1,"delete":1},{"role":"System Manager","read":1,"write":1,"create":1,"delete":1}]
+}
