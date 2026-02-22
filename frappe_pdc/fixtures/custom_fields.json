@@ -1,0 +1,24 @@
+[
+    {
+        "doctype": "Custom Field",
+        "name": "Payment Entry-is_pdc",
+        "dt": "Payment Entry",
+        "fieldname": "is_pdc",
+        "label": "Is PDC",
+        "fieldtype": "Check",
+        "insert_after": "mode_of_payment",
+        "module": "Frappe PDC"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Payment Entry-pdc_status",
+        "dt": "Payment Entry",
+        "fieldname": "pdc_status",
+        "label": "PDC Status",
+        "fieldtype": "Select",
+        "options": "Pending\nReady for Clearance\nApproved for Clearance\nHanded Over\nPartially Cleared\nPartially Bounced\nCleared\nBounced",
+        "insert_after": "is_pdc",
+        "read_only": 1,
+        "module": "Frappe PDC"
+    }
+]

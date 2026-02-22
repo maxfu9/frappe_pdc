@@ -1,9 +1,9 @@
 [project]
-name = "euro_pdc_full"
+name = "frappe_pdc"
 authors = [
-    { name = "euro", email = "info@europlast.pk"}
+    { name = "EuroPlast", email = "hello@europlast.pk"}
 ]
-description = "euro pdc"
+description = "frappe pdc"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]

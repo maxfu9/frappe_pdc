@@ -1,6 +1,6 @@
-### euro pdc
+### frappe pdc
 
-euro pdc
+frappe pdc
 
 ### Installation
 
@@ -9,7 +9,7 @@ You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 ```bash
 cd $PATH_TO_YOUR_BENCH
 bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app euro_pdc_full
+bench install-app frappe_pdc
 ```
 
 ### Contributing
@@ -17,7 +17,7 @@ bench install-app euro_pdc_full
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
 
 ```bash
-cd apps/euro_pdc_full
+cd apps/frappe_pdc
 pre-commit install
 ```
 

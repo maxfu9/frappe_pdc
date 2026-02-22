@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "Bounced PDCs",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT payment_entry, customer, invoice, amount, reference_date, bounced_reason, pdc_status FROM `tabPDC` WHERE pdc_status = 'Bounced'"
+}

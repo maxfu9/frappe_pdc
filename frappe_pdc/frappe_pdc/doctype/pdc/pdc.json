@@ -1,0 +1,206 @@
+{
+  "doctype": "DocType",
+  "name": "PDC",
+  "module": "Frappe PDC",
+  "fields": [
+    {
+      "fieldname": "section_basic_info",
+      "fieldtype": "Section Break",
+      "label": "Basic Information"
+    },
+    {
+      "fieldname": "company",
+      "label": "Company",
+      "fieldtype": "Link",
+      "options": "Company",
+      "reqd": 1
+    },
+    {
+      "fieldname": "customer",
+      "label": "Customer",
+      "fieldtype": "Link",
+      "options": "Customer",
+      "reqd": 1
+    },
+    {
+      "fieldname": "amount",
+      "label": "Total Amount",
+      "fieldtype": "Currency",
+      "reqd": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "posting_date",
+      "label": "Posting Date",
+      "fieldtype": "Date",
+      "default": "Today",
+      "reqd": 1
+    },
+    {
+      "fieldname": "pdc_status",
+      "label": "PDC Status",
+      "fieldtype": "Select",
+      "options": "Pending\nReady for Clearance\nApproved for Clearance\nHanded Over\nPartially Cleared\nPartially Bounced\nCleared\nBounced",
+      "default": "Pending",
+      "reqd": 1,
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "payment_entry",
+      "label": "Payment Entry",
+      "fieldtype": "Link",
+      "options": "Payment Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "cleared_amount",
+      "label": "Total Cleared Amount",
+      "fieldtype": "Currency",
+      "read_only": 1,
+      "allow_on_submit": 1,
+      "default": "0"
+    },
+    {
+      "fieldname": "section_cheque_details",
+      "fieldtype": "Section Break",
+      "label": "Cheque Details"
+    },
+    {
+      "fieldname": "cheque_no",
+      "label": "Cheque/Reference No",
+      "fieldtype": "Data",
+      "reqd": 1
+    },
+    {
+      "fieldname": "reference_date",
+      "label": "Cheque/Reference Date",
+      "fieldtype": "Date",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "bank_name",
+      "label": "Bank Name",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "bank_account",
+      "label": "Customer Bank Account",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "section_handover",
+      "fieldtype": "Section Break",
+      "label": "Handover to Supplier",
+      "depends_on": "eval:doc.pdc_status == 'Handed Over'"
+    },
+    {
+      "fieldname": "handed_over_to_supplier",
+      "label": "Endorsed to Supplier",
+      "fieldtype": "Link",
+      "options": "Supplier",
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "column_break_handover",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "handover_date",
+      "label": "Date of Handover",
+      "fieldtype": "Date",
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "supplier_payment_entry",
+      "label": "Supplier Payment Entry",
+      "fieldtype": "Link",
+      "options": "Payment Entry",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "section_invoices",
+      "fieldtype": "Section Break",
+      "label": "Allocated Invoices"
+    },
+    {
+      "fieldname": "references_table",
+      "label": "Sales Invoices",
+      "fieldtype": "Table",
+      "options": "PDC Reference",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "purchase_references",
+      "label": "Purchase Invoices",
+      "fieldtype": "Table",
+      "options": "PDC Reference",
+      "read_only": 1,
+      "allow_on_submit": 1,
+      "depends_on": "eval:doc.pdc_status == 'Handed Over' || doc.handed_over_to_supplier"
+    },
+    {
+      "fieldname": "section_notifications",
+      "fieldtype": "Section Break",
+      "label": "Notifications & Logs"
+    },
+    {
+      "fieldname": "accounts_manager_notified",
+      "label": "Accounts Manager Notified",
+      "fieldtype": "Check",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "whatsapp_sent",
+      "label": "WhatsApp Sent",
+      "fieldtype": "Check",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "bounced_reason",
+      "label": "Bounced Reason",
+      "fieldtype": "Small Text",
+      "depends_on": "eval:doc.pdc_status == 'Bounced'",
+      "allow_on_submit": 1
+    }
+  ],
+  "is_submittable": 1,
+  "permissions": [
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1
+    },
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1
+    }
+  ]
+}

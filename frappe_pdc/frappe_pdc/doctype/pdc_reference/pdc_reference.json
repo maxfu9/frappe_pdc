@@ -1,0 +1,80 @@
+{
+    "doctype": "DocType",
+    "name": "PDC Reference",
+    "module": "Frappe PDC",
+    "istable": 1,
+    "editable_grid": 1,
+    "fields": [
+        {
+            "fieldname": "reference_doctype",
+            "label": "Type",
+            "fieldtype": "Link",
+            "options": "DocType",
+            "in_list_view": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "reference_name",
+            "label": "Name",
+            "fieldtype": "Dynamic Link",
+            "options": "reference_doctype",
+            "in_list_view": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "total_amount",
+            "label": "Total Amount",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "outstanding_amount",
+            "label": "Outstanding",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "allocated_amount",
+            "label": "Allocated",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "cleared_amount",
+            "label": "Cleared Amount",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "read_only": 1,
+            "allow_on_submit": 1
+        },
+        {
+            "fieldname": "party_type",
+            "label": "Party Type",
+            "fieldtype": "Link",
+            "options": "DocType",
+            "in_list_view": 0,
+            "hidden": 1
+        },
+        {
+            "fieldname": "party",
+            "label": "Party",
+            "fieldtype": "Dynamic Link",
+            "options": "party_type",
+            "in_list_view": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "status",
+            "label": "Status",
+            "fieldtype": "Select",
+            "options": "\nPending\nPartially Cleared\nCleared",
+            "in_list_view": 1,
+            "read_only": 1,
+            "default": "Pending",
+            "allow_on_submit": 1
+        }
+    ]
+}

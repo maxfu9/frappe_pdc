@@ -1,6 +1,0 @@
-[
-  {"doctype": "Custom Field","dt": "Payment Entry","fieldname": "is_pdc","label": "Is PDC","fieldtype": "Check","insert_after": "mode_of_payment"},
-  {"doctype": "Custom Field","dt": "Payment Entry","fieldname": "pdc_status","label": "PDC Status","fieldtype": "Select","options": "Pending\nReady for Clearance\nApproved for Clearance\nCleared\nBounced","insert_after": "is_pdc"},
-  {"doctype": "Custom Field","dt": "Payment Entry","fieldname": "cheque_date","label": "Cheque Date","fieldtype": "Date","insert_after": "pdc_status"},
-  {"doctype": "Custom Field","dt": "Payment Entry","fieldname": "invoice_reference","label": "Invoice Reference","fieldtype": "Link","options": "Sales Invoice","insert_after": "cheque_date"}
-]

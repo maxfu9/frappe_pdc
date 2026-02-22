@@ -1,0 +1,37 @@
+{
+    "doctype": "Dashboard",
+    "name": "PDC Overview",
+    "module": "Frappe PDC",
+    "charts": [
+        {
+            "chart": "PDC Status Distribution",
+            "width": "Half"
+        },
+        {
+            "chart": "PDC Amounts Over Time",
+            "width": "Half"
+        }
+    ],
+    "cards": [
+        {
+            "title": "Pending PDCs",
+            "type": "Report Card",
+            "report": "Pending PDCs"
+        },
+        {
+            "title": "Ready for Clearance",
+            "type": "Report Card",
+            "report": "Ready PDCs"
+        },
+        {
+            "title": "Cleared PDCs",
+            "type": "Report Card",
+            "report": "Cleared PDCs"
+        },
+        {
+            "title": "Bounced PDCs",
+            "type": "Report Card",
+            "report": "Bounced PDCs"
+        }
+    ]
+}

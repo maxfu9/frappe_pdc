@@ -1,0 +1,12 @@
+{
+    "doctype": "Dashboard Chart",
+    "name": "PDC Status Distribution",
+    "chart_name": "PDC Status Distribution",
+    "chart_type": "Count",
+    "document_type": "PDC",
+    "group_by_type": "Count",
+    "group_by_based_on": "pdc_status",
+    "type": "Donut",
+    "is_standard": 1,
+    "module": "Frappe PDC"
+}
