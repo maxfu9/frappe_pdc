@@ -16,12 +16,16 @@ doc_events = {
         "before_submit": "frappe_pdc.pdc.handle_before_submit",
         "on_submit": "frappe_pdc.pdc.handle_pdc_submission",
         "on_cancel": "frappe_pdc.pdc.handle_pdc_cancellation"
+    },
+    "PDC": {
+        "on_cancel": "frappe_pdc.pdc.handle_pdc_cancelled"
     }
 }
 
 # Custom JS for Payment Entry Form
 doctype_js = {
-    "Payment Entry": "public/js/payment_entry.js"
+    "Payment Entry": "public/js/payment_entry.js",
+    "PDC": "public/js/pdc.js",
 }
 
 # List view customizations

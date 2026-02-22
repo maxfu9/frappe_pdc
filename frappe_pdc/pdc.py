@@ -126,6 +126,15 @@ def handle_pdc_cancellation(doc, method=None):
             if pdc.docstatus == 1:
                 pdc_doc = frappe.get_doc("PDC", pdc.name)
                 pdc_doc.cancel()
+                update_linked_pdc_events_status(pdc_doc.name, "Cancelled")
+
+
+@frappe.whitelist()
+def handle_pdc_cancelled(doc, method=None):
+    """
+    Triggered when a PDC is cancelled directly from the PDC form.
+    """
+    update_linked_pdc_events_status(doc.name, "Cancelled")
 
 
 @frappe.whitelist()
@@ -141,7 +150,7 @@ def get_pdc_name(payment_entry):
 
 # -----------------------------
 @frappe.whitelist()
-def clear_pdc(payment_entry_name, clear_amount=None):
+def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     """
     Marks both Payment Entry and PDC as Cleared (or Partially Cleared) and reconciles invoices.
     Optimized for single-save transaction integrity.
@@ -175,6 +184,8 @@ def clear_pdc(payment_entry_name, clear_amount=None):
         frappe.throw(_("Clearance amount must be greater than zero."))
     if clear_amount > remaining_to_clear + 0.01:
         frappe.throw(_("Clearance amount ({0}) exceeds remaining PDC amount ({1})").format(clear_amount, remaining_to_clear))
+    if mode_of_payment and not frappe.db.exists("Mode of Payment", mode_of_payment):
+        frappe.throw(_("Mode of Payment {0} does not exist.").format(mode_of_payment))
 
     # 2. IN-MEMORY UPDATES & DELTA TRACKING (No Saves yet)
     to_distribute = clear_amount
@@ -229,6 +240,8 @@ def clear_pdc(payment_entry_name, clear_amount=None):
                 })
         cleared_pe.flags.ignore_pdc_check = True
         cleared_pe.insert(ignore_permissions=True)
+        if mode_of_payment:
+            cleared_pe.mode_of_payment = mode_of_payment
         cleared_pe.submit()
         
         # B. Adjust the ORIGINAL PE (Master Draft) to the REMAINDER
@@ -262,6 +275,8 @@ def clear_pdc(payment_entry_name, clear_amount=None):
                     "total_amount": row.total_amount,
                     "outstanding_amount": row.outstanding_amount
                 })
+        if mode_of_payment:
+            pe_doc.mode_of_payment = mode_of_payment
         pe_doc.save(ignore_permissions=True)
         pe_doc.submit()
 
@@ -290,6 +305,8 @@ def clear_pdc(payment_entry_name, clear_amount=None):
                         })
                 cleared_supp_pe.flags.ignore_pdc_check = True
                 cleared_supp_pe.insert(ignore_permissions=True)
+                if mode_of_payment:
+                    cleared_supp_pe.mode_of_payment = mode_of_payment
                 cleared_supp_pe.submit()
                 
                 # Adjust Master Supplier Draft
@@ -323,6 +340,8 @@ def clear_pdc(payment_entry_name, clear_amount=None):
                             "total_amount": row.total_amount,
                             "outstanding_amount": row.outstanding_amount
                         })
+                if mode_of_payment:
+                    supp_pe.mode_of_payment = mode_of_payment
                 supp_pe.save(ignore_permissions=True)
                 supp_pe.submit()
 
@@ -335,8 +354,42 @@ def clear_pdc(payment_entry_name, clear_amount=None):
     frappe.db.set_value("Payment Entry", pe_doc.name, "pdc_status", new_status, update_modified=False)
     if pdc_doc.supplier_payment_entry:
         frappe.db.set_value("Payment Entry", pdc_doc.supplier_payment_entry, "pdc_status", new_status, update_modified=False)
-    
+
+    if new_status == "Cleared":
+        update_linked_pdc_events_status(pdc_doc.name, "Completed")
+
     frappe.db.commit()
+
+
+def update_linked_pdc_events_status(pdc_name, target_status):
+    """
+    Update status of all Event records linked to this PDC.
+    Uses doc.save() so standard Event hooks (including Google sync logic) can run.
+    """
+    if target_status not in {"Open", "Completed", "Closed", "Cancelled"}:
+        frappe.throw(_("Invalid Event status: {0}").format(target_status))
+
+    events = frappe.get_all(
+        "Event",
+        filters={
+            "reference_doctype": "PDC",
+            "reference_docname": pdc_name,
+            "docstatus": ["<", 2],
+            "status": ["!=", target_status],
+        },
+        fields=["name"],
+    )
+
+    for event in events:
+        try:
+            event_doc = frappe.get_doc("Event", event.name)
+            event_doc.status = target_status
+            event_doc.save(ignore_permissions=True)
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"Failed to set Event {event.name} to {target_status} for PDC {pdc_name}",
+            )
 
 
 def get_unpaid_invoices(party, party_type, company):
@@ -648,3 +701,84 @@ def notify_customer(pdc):
         </div>
     """
     frappe.sendmail(recipients=[customer_email], subject=subject, message=message)
+
+
+@frappe.whitelist()
+def ensure_pdc_calendar_client_script():
+    script = """
+frappe.ui.form.on('PDC', {
+    refresh(frm) {
+        if (frm.__pdc_calendar_btn_added) return;
+        frm.__pdc_calendar_btn_added = true;
+
+        frm.add_custom_button(__('Add to Calendar'), () => {
+            if (!frm.doc.reference_date) {
+                frappe.msgprint(__('Reference Date is required to create a calendar event.'));
+                return;
+            }
+
+            const title = __('PDC Follow-up: {0}', [frm.doc.cheque_no || frm.doc.name]);
+            const date = frm.doc.reference_date;
+            const ymd = date.split('-').join('');
+            const ymd_next = frappe.datetime.add_days(date, 1).split('-').join('');
+            const details = [
+                __('PDC: {0}', [frm.doc.name]),
+                __('Cheque/Reference No: {0}', [frm.doc.cheque_no || __('N/A')]),
+                __('Customer: {0}', [frm.doc.customer || __('N/A')]),
+                __('Amount: {0}', [format_currency(flt(frm.doc.amount), frm.doc.currency)]),
+                __('Status: {0}', [frm.doc.pdc_status || __('N/A')])
+            ].join('\\n');
+
+            const google = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${ymd}/${ymd_next}&details=${encodeURIComponent(details)}`;
+            const outlook = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${encodeURIComponent(title)}&startdt=${date}&enddt=${frappe.datetime.add_days(date, 1)}&allday=true&body=${encodeURIComponent(details)}`;
+            const yahoo = `https://calendar.yahoo.com/?v=60&view=d&type=20&title=${encodeURIComponent(title)}&st=${ymd}&et=${ymd_next}&desc=${encodeURIComponent(details)}`;
+
+            const d = new frappe.ui.Dialog({
+                title: __('Add to Calendar'),
+                fields: [{
+                    fieldtype: 'HTML',
+                    fieldname: 'calendar_html',
+                    options: `
+                        <div style="line-height:1.8;">
+                            <div><b>${__('Reference Date')}:</b> ${frappe.datetime.str_to_user(date)}</div>
+                            <div><b>${__('Event Title')}:</b> ${frappe.utils.escape_html(title)}</div>
+                            <div style="margin-top: 10px; display:flex; gap:8px; flex-wrap:wrap;">
+                                <a class="btn btn-sm btn-default" target="_blank" rel="noopener noreferrer" href="${google}">${__('Google Calendar')}</a>
+                                <a class="btn btn-sm btn-default" target="_blank" rel="noopener noreferrer" href="${outlook}">${__('Outlook Calendar')}</a>
+                                <a class="btn btn-sm btn-default" target="_blank" rel="noopener noreferrer" href="${yahoo}">${__('Yahoo Calendar')}</a>
+                            </div>
+                        </div>
+                    `
+                }],
+                primary_action_label: __('Close'),
+                primary_action() { d.hide(); }
+            });
+            d.show();
+        });
+    }
+});
+"""
+
+    target = frappe.db.get_value("Client Script", {"name": "PDC Add to Calendar"}, "name")
+    if target:
+        doc = frappe.get_doc("Client Script", target)
+        doc.dt = "PDC"
+        doc.view = "Form"
+        doc.enabled = 1
+        doc.script = script
+        doc.save(ignore_permissions=True)
+    else:
+        doc = frappe.get_doc(
+            {
+                "doctype": "Client Script",
+                "name": "PDC Add to Calendar",
+                "dt": "PDC",
+                "view": "Form",
+                "enabled": 1,
+                "script": script,
+                "script_type": "Client",
+            }
+        )
+        doc.insert(ignore_permissions=True)
+
+    return doc.name
