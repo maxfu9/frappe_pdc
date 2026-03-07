@@ -1,6 +1,11 @@
 frappe.ui.form.on('Payment Entry', {
     refresh: function (frm) {
         frm.set_df_property('pdc_status', 'read_only', 1);
+        frm.toggle_display('pdc_status', !!frm.doc.is_pdc);
+        if (!frm.doc.is_pdc) {
+            frm.set_intro('');
+            frm.set_df_property('pdc_status', 'description', '');
+        }
 
         // --- PDC REGISTRATION WORKFLOW ---
         if (frm.doc.is_pdc && frm.doc.docstatus === 0) {
@@ -8,24 +13,7 @@ frappe.ui.form.on('Payment Entry', {
             frm.remove_custom_button(__('Register PDC'));
 
             if (!frm.is_new()) {
-                // Definitively replace SUBMIT with REGISTER PDC as primary action
-                frm.page.set_primary_action(__('Register PDC'), function () {
-                    if (frm.is_dirty()) {
-                        frappe.msgprint(__('Please save the Payment Entry before registering PDC.'));
-                        return;
-                    }
-                    frappe.call({
-                        method: 'frappe_pdc.pdc.register_pdc',
-                        args: { payment_entry_name: frm.doc.name },
-                        callback: function (r) {
-                            if (r.message) {
-                                frappe.show_alert({ message: __('PDC Registered Successfully'), indicator: 'green' });
-                                frm.reload_doc();
-                                frappe.set_route('Form', 'PDC', r.message);
-                            }
-                        }
-                    });
-                });
+                set_pdc_primary_action(frm);
             } else {
                 // If new, ensure primary action is 'Save' (standard Frappe behavior)
                 // but we hide Submit precisely when it would normally show up.
@@ -135,6 +123,11 @@ frappe.ui.form.on('Payment Entry', {
     is_pdc: function (frm) {
         frm.toggle_reqd('reference_date', frm.doc.is_pdc);
         frm.toggle_reqd('reference_no', frm.doc.is_pdc);
+        frm.toggle_display('pdc_status', !!frm.doc.is_pdc);
+        if (!frm.doc.is_pdc) {
+            frm.set_intro('');
+            frm.set_df_property('pdc_status', 'description', '');
+        }
         if (frm.doc.is_pdc) {
             sync_pdc_amount(frm);
         }
@@ -151,6 +144,54 @@ frappe.ui.form.on('Payment Entry', {
         }
     }
 });
+
+function set_pdc_primary_action(frm) {
+    frappe.call({
+        method: 'frappe_pdc.pdc.get_pdc_name',
+        args: { payment_entry: frm.doc.name },
+        callback: function (r) {
+            const existing_pdc = r.message;
+
+            if (existing_pdc) {
+                frm.page.set_primary_action(__('View PDC Record'), function () {
+                    frappe.set_route('Form', 'PDC', existing_pdc);
+                });
+                return;
+            }
+
+            frm.page.set_primary_action(__('Register PDC'), function () {
+                if (frm.is_dirty()) {
+                    frappe.msgprint(__('Please save the Payment Entry before registering PDC.'));
+                    return;
+                }
+
+                // Re-check at click time to prevent duplicate registration.
+                frappe.call({
+                    method: 'frappe_pdc.pdc.get_pdc_name',
+                    args: { payment_entry: frm.doc.name },
+                    callback: function (check) {
+                        if (check.message) {
+                            frappe.set_route('Form', 'PDC', check.message);
+                            return;
+                        }
+
+                        frappe.call({
+                            method: 'frappe_pdc.pdc.register_pdc',
+                            args: { payment_entry_name: frm.doc.name },
+                            callback: function (register_resp) {
+                                if (register_resp.message) {
+                                    frappe.show_alert({ message: __('PDC Registered Successfully'), indicator: 'green' });
+                                    frm.reload_doc();
+                                    frappe.set_route('Form', 'PDC', register_resp.message);
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        }
+    });
+}
 
 // Helper to sync PDC amounts
 function sync_pdc_amount(frm) {

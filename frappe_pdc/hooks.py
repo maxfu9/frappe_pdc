@@ -13,6 +13,7 @@ app_license = "MIT"
 # DocType Event Hooks
 doc_events = {
     "Payment Entry": {
+        "on_update": "frappe_pdc.pdc.handle_payment_entry_update",
         "before_submit": "frappe_pdc.pdc.handle_before_submit",
         "on_submit": "frappe_pdc.pdc.handle_pdc_submission",
         "on_cancel": "frappe_pdc.pdc.handle_pdc_cancellation"

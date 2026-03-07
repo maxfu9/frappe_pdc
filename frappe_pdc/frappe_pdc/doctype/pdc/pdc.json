@@ -100,7 +100,7 @@
       "fieldname": "section_handover",
       "fieldtype": "Section Break",
       "label": "Handover to Supplier",
-      "depends_on": "eval:doc.pdc_status == 'Handed Over'"
+      "depends_on": "eval:doc.pdc_status == 'Handed Over' || doc.handed_over_to_supplier"
     },
     {
       "fieldname": "handed_over_to_supplier",
@@ -153,24 +153,6 @@
       "fieldname": "section_notifications",
       "fieldtype": "Section Break",
       "label": "Notifications & Logs"
-    },
-    {
-      "fieldname": "accounts_manager_notified",
-      "label": "Accounts Manager Notified",
-      "fieldtype": "Check",
-      "read_only": 1,
-      "allow_on_submit": 1
-    },
-    {
-      "fieldname": "whatsapp_sent",
-      "label": "WhatsApp Sent",
-      "fieldtype": "Check",
-      "read_only": 1,
-      "allow_on_submit": 1
-    },
-    {
-      "fieldname": "column_break_3",
-      "fieldtype": "Column Break"
     },
     {
       "fieldname": "bounced_reason",

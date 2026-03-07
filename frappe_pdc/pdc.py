@@ -24,6 +24,83 @@ def handle_before_submit(doc, method=None):
             frappe.throw(_("This is a PDC. Please click 'Register PDC' in Draft mode before submitting."))
 
 
+def handle_payment_entry_update(doc, method=None):
+    """
+    Keep linked PDC references in sync when a draft Payment Entry references change.
+    - Customer PE -> PDC.references_table
+    - Supplier PE -> PDC.purchase_references
+    """
+    if doc.docstatus != 0:
+        return
+
+    if getattr(doc.flags, "skip_pdc_sync", False):
+        return
+
+    pdc_name = frappe.db.get_value("PDC", {"payment_entry": doc.name}, "name")
+    table_field = "references_table"
+    is_customer_side = True
+
+    if not pdc_name:
+        pdc_name = frappe.db.get_value("PDC", {"supplier_payment_entry": doc.name}, "name")
+        table_field = "purchase_references"
+        is_customer_side = False
+
+    if not pdc_name:
+        return
+
+    pdc_doc = frappe.get_doc("PDC", pdc_name)
+    if pdc_doc.docstatus == 2:
+        return
+
+    existing_rows = {
+        (row.reference_doctype, row.reference_name): row
+        for row in (pdc_doc.get(table_field) or [])
+    }
+
+    pdc_doc.set(table_field, [])
+    references_payload = []
+
+    for ref in doc.references:
+        key = (ref.reference_doctype, ref.reference_name)
+        prev = existing_rows.get(key)
+        prev_cleared = flt(prev.cleared_amount) if prev else 0
+        alloc = flt(ref.allocated_amount)
+        cleared = min(prev_cleared, alloc) if alloc > 0 else 0
+        status = "Cleared" if alloc > 0 and abs(cleared - alloc) < 0.01 else ("Partially Cleared" if cleared > 0 else "Pending")
+
+        row = {
+            "reference_doctype": ref.reference_doctype,
+            "reference_name": ref.reference_name,
+            "total_amount": ref.total_amount,
+            "outstanding_amount": ref.outstanding_amount,
+            "allocated_amount": ref.allocated_amount,
+            "party_type": doc.party_type,
+            "party": doc.party,
+            "cleared_amount": cleared,
+            "status": status,
+        }
+        pdc_doc.append(table_field, row)
+
+        if is_customer_side:
+            references_payload.append(
+                {
+                    "reference_doctype": ref.reference_doctype,
+                    "reference_name": ref.reference_name,
+                    "total_amount": ref.total_amount,
+                    "outstanding_amount": ref.outstanding_amount,
+                    "allocated_amount": ref.allocated_amount,
+                    "party_type": doc.party_type,
+                    "party": doc.party,
+                }
+            )
+
+    if is_customer_side:
+        pdc_doc.amount = doc.paid_amount
+        pdc_doc.references = frappe.as_json(references_payload)
+
+    pdc_doc.save(ignore_permissions=True)
+
+
 @frappe.whitelist()
 def register_pdc(payment_entry_name):
     """
@@ -167,6 +244,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     
     current_pe_name = pdc_doc.payment_entry
     pe_doc = frappe.get_doc("Payment Entry", current_pe_name)
+    pe_doc.flags.skip_pdc_sync = True
     
     if pe_doc.docstatus != 0:
         frappe.throw(_("The linked Payment Entry {0} is already submitted. Please refresh the PDC record.").format(current_pe_name))
@@ -239,6 +317,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                     "outstanding_amount": row.outstanding_amount
                 })
         cleared_pe.flags.ignore_pdc_check = True
+        cleared_pe.flags.skip_pdc_sync = True
         cleared_pe.insert(ignore_permissions=True)
         if mode_of_payment:
             cleared_pe.mode_of_payment = mode_of_payment
@@ -283,6 +362,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     # --- SUPPLIER SIDE (if handed over) ---
     if pdc_doc.supplier_payment_entry:
         supp_pe = frappe.get_doc("Payment Entry", pdc_doc.supplier_payment_entry)
+        supp_pe.flags.skip_pdc_sync = True
         if supp_pe.docstatus == 0:
             if abs(remaining_balance) > 0.01:
                 # SPIN-OFF Supplier PE
@@ -304,6 +384,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                             "outstanding_amount": row.outstanding_amount
                         })
                 cleared_supp_pe.flags.ignore_pdc_check = True
+                cleared_supp_pe.flags.skip_pdc_sync = True
                 cleared_supp_pe.insert(ignore_permissions=True)
                 if mode_of_payment:
                     cleared_supp_pe.mode_of_payment = mode_of_payment
