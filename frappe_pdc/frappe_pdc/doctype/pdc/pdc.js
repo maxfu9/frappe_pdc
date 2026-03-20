@@ -15,14 +15,22 @@ frappe.ui.form.on('PDC', {
         };
         frm.set_df_property('pdc_status', 'read_only', 1);
         if (frm.doc.pdc_status) {
-            frm.set_df_property(
-                'pdc_status',
-                'description',
-                `<b style="color:${status_colors[frm.doc.pdc_status] || 'black'}">${frm.doc.pdc_status}</b>`
-            );
+            const status_color = status_colors[frm.doc.pdc_status] || 'blue';
+            const status_label = __(frm.doc.pdc_status);
+            const status_chip = `
+                <span style="
+                    display:inline-flex; align-items:center; gap:6px;
+                    padding: 2px 10px; border-radius: 999px;
+                    font-size: 12px; font-weight: 700; letter-spacing: .02em;
+                    background: #f8fafc; color: ${status_color}; border: 1px solid #e2e8f0;">
+                    <span style="width:8px;height:8px;border-radius:999px;background:${status_color};display:inline-block"></span>
+                    ${status_label}
+                </span>
+            `;
+            frm.set_df_property('pdc_status', 'description', status_chip);
             frm.set_intro(
-                __('PDC Status: {0}', [`<b style="color:${status_colors[frm.doc.pdc_status] || 'black'}">${__(frm.doc.pdc_status)}</b>`]),
-                status_colors[frm.doc.pdc_status] || 'blue'
+                __('PDC Status: {0}', [status_chip]),
+                status_color
             );
         }
 
@@ -120,35 +128,44 @@ frappe.ui.form.on('PDC', {
 
         // Dashboard Summary (guarded so UI errors here don't block custom buttons)
         try {
-            if (frm.doc.docstatus === 1) {
+            if (frm.doc.amount !== undefined && frm.doc.amount !== null) {
                 let total = flt(frm.doc.amount);
                 let cleared = flt(frm.doc.cleared_amount);
                 let percent = total > 0 ? (cleared / total) * 100 : 0;
                 let color = percent >= 100 ? 'green' : (percent > 0 ? 'orange' : 'grey');
 
+                const remaining = total - cleared;
+                const remaining_color = remaining > 0 ? '#ef4444' : '#10b981';
                 let html = `
-                    <div style="padding: 20px; background: white; border-radius: 12px; border: 1px solid #d1d5db; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 25px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <span style="font-size: 1.1em; font-weight: 700; color: #1e293b;">${__('Clearance Progress')}</span>
-                            <span style="font-size: 1em; font-weight: 800; color: ${color};">${percent.toFixed(1)}%</span>
-                        </div>
-                        
-                        <div style="width: 100%; background: #f1f5f9; height: 12px; border-radius: 6px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0;">
-                            <div style="width: ${percent}%; height: 100%; background: ${color}; transition: width 0.8s ease-out; box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);"></div>
-                        </div>
-                        
-                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; border-top: 1px solid #f1f5f9; padding-top: 15px; margin-top: 5px;">
-                            <div style="padding: 10px; text-align: center;">
-                                <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; font-weight: 600;">${__('Total Amount')}</div>
-                                <div style="font-size: 1.25rem; font-weight: 700; color: #0f172a;">${format_currency(total, frm.doc.currency)}</div>
+                    <div style="
+                        padding: 18px 20px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+                        border-radius: 14px; border: 1px solid #e2e8f0;
+                        box-shadow: 0 10px 20px -14px rgba(15, 23, 42, 0.35);
+                        margin-bottom: 24px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 12px;">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <div style="width:10px;height:10px;border-radius:999px;background:${color}; box-shadow:0 0 0 4px rgba(15,23,42,0.06);"></div>
+                                <div style="font-size: 14px; font-weight: 800; letter-spacing:.02em; color:#0f172a;">${__('Clearance Progress')}</div>
                             </div>
-                            <div style="padding: 10px; text-align: center; border-left: 1px solid #f1f5f9; border-right: 1px solid #f1f5f9;">
-                                <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; font-weight: 600;">${__('Cleared')}</div>
-                                <div style="font-size: 1.25rem; font-weight: 700; color: #10b981;">${format_currency(cleared, frm.doc.currency)}</div>
+                            <div style="font-size: 13px; font-weight: 800; color:${color}; background:#fff; border:1px solid #e2e8f0; padding:2px 8px; border-radius:999px;">
+                                ${percent.toFixed(1)}%
                             </div>
-                            <div style="padding: 10px; text-align: center;">
-                                <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; font-weight: 600;">${__('Remaining')}</div>
-                                <div style="font-size: 1.25rem; font-weight: 700; color: ${total - cleared > 0 ? '#ef4444' : '#10b981'};">${format_currency(total - cleared, frm.doc.currency)}</div>
+                        </div>
+                        <div style="width: 100%; background: #eef2f7; height: 10px; border-radius: 999px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 16px;">
+                            <div style="width: ${percent}%; height: 100%; background: ${color}; transition: width 0.5s ease-out;"></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px;">
+                            <div style="padding: 10px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:10px;">
+                                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color:#64748b; font-weight:700;">${__('Total Amount')}</div>
+                                <div style="font-size: 16px; font-weight: 800; color:#0f172a;">${format_currency(total, frm.doc.currency)}</div>
+                            </div>
+                            <div style="padding: 10px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:10px;">
+                                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color:#64748b; font-weight:700;">${__('Cleared')}</div>
+                                <div style="font-size: 16px; font-weight: 800; color:#10b981;">${format_currency(cleared, frm.doc.currency)}</div>
+                            </div>
+                            <div style="padding: 10px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:10px;">
+                                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color:#64748b; font-weight:700;">${__('Remaining')}</div>
+                                <div style="font-size: 16px; font-weight: 800; color:${remaining_color};">${format_currency(remaining, frm.doc.currency)}</div>
                             </div>
                         </div>
                     </div>
