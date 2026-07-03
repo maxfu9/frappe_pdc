@@ -1,0 +1,63 @@
+{
+  "doctype": "DocType",
+  "name": "PDC Activity",
+  "module": "Frappe PDC",
+  "istable": 1,
+  "editable_grid": 1,
+  "fields": [
+    {
+      "fieldname": "timestamp",
+      "label": "Timestamp",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "action",
+      "label": "Action",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "old_status",
+      "label": "Old Status",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "new_status",
+      "label": "New Status",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "user",
+      "label": "User",
+      "fieldtype": "Link",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reference_doctype",
+      "label": "Reference Type",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reference_name",
+      "label": "Reference",
+      "fieldtype": "Dynamic Link",
+      "options": "reference_doctype",
+      "read_only": 1
+    },
+    {
+      "fieldname": "details",
+      "label": "Details",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    }
+  ]
+}

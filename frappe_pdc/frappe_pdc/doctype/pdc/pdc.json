@@ -2,6 +2,7 @@
   "doctype": "DocType",
   "name": "PDC",
   "module": "Frappe PDC",
+  "title_field": "pdc_title",
   "fields": [
     {
       "fieldname": "section_basic_info",
@@ -21,6 +22,13 @@
       "fieldtype": "Link",
       "options": "Customer",
       "reqd": 1
+    },
+    {
+      "fieldname": "pdc_title",
+      "label": "Title",
+      "fieldtype": "Data",
+      "read_only": 1,
+      "in_list_view": 1
     },
     {
       "fieldname": "amount",
@@ -159,6 +167,14 @@
       "label": "Bounced Reason",
       "fieldtype": "Small Text",
       "depends_on": "eval:doc.pdc_status == 'Bounced'",
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "status_history",
+      "label": "Status History",
+      "fieldtype": "Table",
+      "options": "PDC Activity",
+      "read_only": 1,
       "allow_on_submit": 1
     }
   ],

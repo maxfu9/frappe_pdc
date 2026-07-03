@@ -1,0 +1,68 @@
+{
+  "doctype": "DocType",
+  "name": "PDC Settings",
+  "module": "Frappe PDC",
+  "issingle": 1,
+  "fields": [
+    {
+      "fieldname": "permissions_section",
+      "fieldtype": "Section Break",
+      "label": "Permissions"
+    },
+    {
+      "fieldname": "manager_roles",
+      "label": "PDC Manager Roles",
+      "fieldtype": "Small Text",
+      "default": "Accounts Manager\nSystem Manager",
+      "description": "Users with any of these roles can register, clear, hand over, bounce, and approve PDCs."
+    },
+    {
+      "fieldname": "workflow_section",
+      "fieldtype": "Section Break",
+      "label": "Workflow"
+    },
+    {
+      "fieldname": "require_clearance_approval",
+      "label": "Require Approval Before Clearance",
+      "fieldtype": "Check",
+      "default": "0"
+    },
+    {
+      "fieldname": "notifications_section",
+      "fieldtype": "Section Break",
+      "label": "Notifications"
+    },
+    {
+      "fieldname": "notify_accounts_managers",
+      "label": "Notify PDC Managers on Maturity",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "notify_customers",
+      "label": "Notify Customer on Maturity",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "reminder_days_before_maturity",
+      "label": "Reminder Days Before Maturity",
+      "fieldtype": "Int",
+      "default": "0",
+      "description": "Reserved for pre-maturity reminders."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1
+    }
+  ]
+}

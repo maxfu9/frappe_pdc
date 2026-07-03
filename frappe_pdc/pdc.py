@@ -1,6 +1,141 @@
 import frappe
-from frappe.utils import flt, today
+from frappe.utils import flt, now_datetime, today
 from frappe import _
+
+PDC_MANAGER_DEFAULT_ROLES = ("Accounts Manager", "System Manager")
+PDC_FINAL_STATUSES = {"Cleared", "Bounced", "Partially Bounced"}
+
+
+def _split_roles(value):
+    roles = []
+    for role in (value or "").replace(",", "\n").splitlines():
+        role = role.strip()
+        if role:
+            roles.append(role)
+    return roles
+
+
+def get_pdc_settings():
+    try:
+        return frappe.get_single("PDC Settings")
+    except Exception:
+        return frappe._dict()
+
+
+def get_pdc_manager_roles():
+    settings = get_pdc_settings()
+    return _split_roles(getattr(settings, "manager_roles", None)) or list(PDC_MANAGER_DEFAULT_ROLES)
+
+
+def _settings_flag(fieldname, default=0):
+    settings = get_pdc_settings()
+    value = getattr(settings, fieldname, None)
+    return int(default if value is None else value)
+
+
+def _require_pdc_manager(action):
+    if frappe.session.user == "Administrator":
+        return
+
+    allowed_roles = set(get_pdc_manager_roles())
+    user_roles = set(frappe.get_roles(frappe.session.user))
+    if not allowed_roles.intersection(user_roles):
+        frappe.throw(
+            _("Only users with one of these roles can {0}: {1}").format(
+                action, ", ".join(sorted(allowed_roles))
+            ),
+            frappe.PermissionError,
+        )
+
+
+def _require_doc_permission(doc, permtype="read"):
+    if not frappe.has_permission(doc.doctype, ptype=permtype, doc=doc):
+        frappe.throw(
+            _("You do not have {0} permission for {1} {2}.").format(
+                permtype, doc.doctype, doc.name
+            ),
+            frappe.PermissionError,
+        )
+
+
+def _get_payment_entry(payment_entry_name, permtype="read"):
+    doc = frappe.get_doc("Payment Entry", payment_entry_name)
+    _require_doc_permission(doc, permtype)
+    return doc
+
+
+def _get_pdc_by_payment_entry(payment_entry_name, lock=False):
+    if lock:
+        rows = frappe.db.sql(
+            """
+            select name
+            from `tabPDC`
+            where payment_entry = %s and docstatus < 2
+            for update
+            """,
+            (payment_entry_name,),
+            as_dict=True,
+        )
+    else:
+        rows = frappe.get_list(
+            "PDC",
+            filters={"payment_entry": payment_entry_name, "docstatus": ["<", 2]},
+            fields=["name"],
+            limit=1,
+        )
+
+    if not rows:
+        frappe.throw(_("PDC record not found for Payment Entry {0}.").format(payment_entry_name))
+
+    pdc_doc = frappe.get_doc("PDC", rows[0].name)
+    _require_doc_permission(pdc_doc, "read")
+    return pdc_doc
+
+
+def _save_with_pdc_bypass(doc):
+    # All callers are internal PDC workflow paths after role and source-document checks.
+    # The bypass is needed so submitted PDC metadata and linked Payment Entries can stay in sync.
+    doc.save(ignore_permissions=True)
+
+
+def _insert_with_pdc_bypass(doc):
+    # All callers are internal PDC workflow paths after role and source-document checks.
+    # The bypass is needed to create system-generated split Payment Entries atomically.
+    doc.insert(ignore_permissions=True)
+
+
+def _delete_with_pdc_bypass(doctype, name):
+    # All callers are internal PDC workflow paths after role and source-document checks.
+    # The bypass is limited to draft Payment Entries created or controlled by the PDC workflow.
+    frappe.delete_doc(doctype, name, ignore_permissions=True)
+
+
+def _append_pdc_activity(
+    pdc_doc,
+    action,
+    old_status=None,
+    new_status=None,
+    details=None,
+    reference_doctype=None,
+    reference_name=None,
+):
+    if not pdc_doc.meta.has_field("status_history"):
+        return
+
+    pdc_doc.append(
+        "status_history",
+        {
+            "action": action,
+            "old_status": old_status,
+            "new_status": new_status,
+            "user": frappe.session.user,
+            "timestamp": now_datetime(),
+            "details": details,
+            "reference_doctype": reference_doctype,
+            "reference_name": reference_name,
+        },
+    )
+
 
 # -----------------------------
 # Payment Entry Hook
@@ -98,7 +233,7 @@ def handle_payment_entry_update(doc, method=None):
         pdc_doc.amount = doc.paid_amount
         pdc_doc.references = frappe.as_json(references_payload)
 
-    pdc_doc.save(ignore_permissions=True)
+    _save_with_pdc_bypass(pdc_doc)
 
 
 @frappe.whitelist()
@@ -107,7 +242,8 @@ def register_pdc(payment_entry_name):
     Creates a PDC record from a DRAFT Payment Entry.
     Does not submit the Payment Entry, so zero GL entry.
     """
-    doc = frappe.get_doc("Payment Entry", payment_entry_name)
+    _require_pdc_manager(_("register PDCs"))
+    doc = _get_payment_entry(payment_entry_name, "write")
     if not doc.is_pdc:
         frappe.throw(_("This Payment Entry is not marked as PDC"))
 
@@ -120,14 +256,21 @@ def register_pdc(payment_entry_name):
     if not doc.reference_no or not doc.reference_date:
         frappe.throw(_("Cheque/Reference No and Cheque/Reference Date are required to register PDC."))
 
-    duplicate_pdc = frappe.get_all(
+    duplicate_filters = {
+        "cheque_no": doc.reference_no,
+        "reference_date": doc.reference_date,
+        "company": doc.company,
+        "docstatus": ["<", 2],
+        "payment_entry": ["!=", doc.name],
+    }
+    if doc.bank_account_no:
+        duplicate_filters["bank_account"] = doc.bank_account_no
+    elif doc.bank:
+        duplicate_filters["bank_name"] = doc.bank
+
+    duplicate_pdc = frappe.get_list(
         "PDC",
-        filters={
-            "cheque_no": doc.reference_no,
-            "reference_date": doc.reference_date,
-            "docstatus": ["<", 2],
-            "payment_entry": ["!=", doc.name],
-        },
+        filters=duplicate_filters,
         fields=["name", "payment_entry"],
         limit=1,
     )
@@ -144,10 +287,13 @@ def register_pdc(payment_entry_name):
     if abs(flt(doc.paid_amount) - total_allocated) > 0.01:
         frappe.throw(_("Paid Amount ({0}) must match Total Allocated ({1}) before registering PDC").format(doc.paid_amount, total_allocated))
 
-    existing = frappe.get_all("PDC", filters={"payment_entry": doc.name}, fields=["name"])
+    existing = frappe.get_list("PDC", filters={"payment_entry": doc.name}, fields=["name"])
     pdc_doc = frappe.get_doc("PDC", existing[0].name) if existing else frappe.new_doc("PDC")
+    if existing:
+        _require_doc_permission(pdc_doc, "write")
 
     # Map fields
+    old_status = pdc_doc.pdc_status
     pdc_doc.payment_entry = doc.name
     pdc_doc.customer = doc.party
     pdc_doc.company = doc.company
@@ -175,14 +321,21 @@ def register_pdc(payment_entry_name):
     
     pdc_doc.references = frappe.as_json(references)
     pdc_doc.pdc_status = "Pending"
-    pdc_doc.save(ignore_permissions=True)
+    _append_pdc_activity(
+        pdc_doc,
+        "Registered",
+        old_status=old_status,
+        new_status="Pending",
+        reference_doctype="Payment Entry",
+        reference_name=doc.name,
+    )
+    _save_with_pdc_bypass(pdc_doc)
     if pdc_doc.docstatus == 0:
         pdc_doc.submit()
     
     return pdc_doc.name
 
 
-@frappe.whitelist()
 def handle_pdc_submission(doc, method=None):
     """
     Triggered ONLY when the Payment Entry is finally submitted (during clearance).
@@ -191,7 +344,6 @@ def handle_pdc_submission(doc, method=None):
     pass
 
 
-@frappe.whitelist()
 def handle_pdc_cancellation(doc, method=None):
     """
     Triggered when a Payment Entry is cancelled.
@@ -206,7 +358,6 @@ def handle_pdc_cancellation(doc, method=None):
                 update_linked_pdc_events_status(pdc_doc.name, "Cancelled")
 
 
-@frappe.whitelist()
 def handle_pdc_cancelled(doc, method=None):
     """
     Triggered when a PDC is cancelled directly from the PDC form.
@@ -219,9 +370,13 @@ def get_pdc_name(payment_entry):
     """
     Finds the PDC record name linked to a Payment Entry (either as customer or supplier PE).
     """
-    pdc = frappe.db.get_value("PDC", {"payment_entry": payment_entry}, "name")
+    pe_doc = _get_payment_entry(payment_entry, "read")
+    pdc = frappe.db.get_value("PDC", {"payment_entry": pe_doc.name}, "name")
     if not pdc:
-        pdc = frappe.db.get_value("PDC", {"supplier_payment_entry": payment_entry}, "name")
+        pdc = frappe.db.get_value("PDC", {"supplier_payment_entry": pe_doc.name}, "name")
+    if pdc:
+        pdc_doc = frappe.get_doc("PDC", pdc)
+        _require_doc_permission(pdc_doc, "read")
     return pdc
 
 
@@ -233,17 +388,18 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     Optimized for single-save transaction integrity.
     """
     # 1. FETCH & VALIDATE
-    pdc_list = frappe.get_all("PDC", filters={"payment_entry": payment_entry_name}, 
-                              fields=["name", "amount", "cleared_amount", "supplier_payment_entry", "handed_over_to_supplier"])
-    if not pdc_list:
-        frappe.throw(_("PDC record not found for this Payment Entry. Please refresh the page."))
-    
-    pdc_doc = frappe.get_doc("PDC", pdc_list[0].name)
-    if pdc_doc.pdc_status in {"Cleared", "Bounced", "Partially Bounced"}:
+    _require_pdc_manager(_("clear PDCs"))
+    pdc_doc = _get_pdc_by_payment_entry(payment_entry_name, lock=True)
+    _require_doc_permission(pdc_doc, "write")
+    old_status = pdc_doc.pdc_status
+
+    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
         frappe.throw(_("This PDC is already finalized and cannot be cleared."))
+    if _settings_flag("require_clearance_approval") and pdc_doc.pdc_status != "Approved for Clearance":
+        frappe.throw(_("This PDC must be approved for clearance before clearing."))
     
     current_pe_name = pdc_doc.payment_entry
-    pe_doc = frappe.get_doc("Payment Entry", current_pe_name)
+    pe_doc = _get_payment_entry(current_pe_name, "write")
     pe_doc.flags.skip_pdc_sync = True
     
     if pe_doc.docstatus != 0:
@@ -318,9 +474,9 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                 })
         cleared_pe.flags.ignore_pdc_check = True
         cleared_pe.flags.skip_pdc_sync = True
-        cleared_pe.insert(ignore_permissions=True)
         if mode_of_payment:
             cleared_pe.mode_of_payment = mode_of_payment
+        _insert_with_pdc_bypass(cleared_pe)
         cleared_pe.submit()
         
         # B. Adjust the ORIGINAL PE (Master Draft) to the REMAINDER
@@ -337,7 +493,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                     "total_amount": row.total_amount,
                     "outstanding_amount": row.outstanding_amount
                 })
-        pe_doc.save(ignore_permissions=True)
+        _save_with_pdc_bypass(pe_doc)
         pdc_doc.payment_entry = pe_doc.name
     else:
         # FULL CLEARANCE
@@ -356,12 +512,12 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                 })
         if mode_of_payment:
             pe_doc.mode_of_payment = mode_of_payment
-        pe_doc.save(ignore_permissions=True)
+        _save_with_pdc_bypass(pe_doc)
         pe_doc.submit()
 
     # --- SUPPLIER SIDE (if handed over) ---
     if pdc_doc.supplier_payment_entry:
-        supp_pe = frappe.get_doc("Payment Entry", pdc_doc.supplier_payment_entry)
+        supp_pe = _get_payment_entry(pdc_doc.supplier_payment_entry, "write")
         supp_pe.flags.skip_pdc_sync = True
         if supp_pe.docstatus == 0:
             if abs(remaining_balance) > 0.01:
@@ -385,9 +541,9 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                         })
                 cleared_supp_pe.flags.ignore_pdc_check = True
                 cleared_supp_pe.flags.skip_pdc_sync = True
-                cleared_supp_pe.insert(ignore_permissions=True)
                 if mode_of_payment:
                     cleared_supp_pe.mode_of_payment = mode_of_payment
+                _insert_with_pdc_bypass(cleared_supp_pe)
                 cleared_supp_pe.submit()
                 
                 # Adjust Master Supplier Draft
@@ -404,7 +560,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                             "total_amount": row.total_amount,
                             "outstanding_amount": row.outstanding_amount
                         })
-                supp_pe.save(ignore_permissions=True)
+                _save_with_pdc_bypass(supp_pe)
                 pdc_doc.supplier_payment_entry = supp_pe.name
             else:
                 # FULL CLEARANCE Supplier
@@ -423,13 +579,22 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                         })
                 if mode_of_payment:
                     supp_pe.mode_of_payment = mode_of_payment
-                supp_pe.save(ignore_permissions=True)
+                _save_with_pdc_bypass(supp_pe)
                 supp_pe.submit()
 
     # 4. FINAL SAVE
     pdc_doc.cleared_amount = new_total_cleared
     pdc_doc.pdc_status = new_status
-    pdc_doc.save(ignore_permissions=True)
+    _append_pdc_activity(
+        pdc_doc,
+        "Cleared" if new_status == "Cleared" else "Partially Cleared",
+        old_status=old_status,
+        new_status=new_status,
+        details=_("Cleared amount: {0}").format(clear_amount),
+        reference_doctype="Payment Entry",
+        reference_name=pe_doc.name,
+    )
+    _save_with_pdc_bypass(pdc_doc)
     
     # Sync status
     frappe.db.set_value("Payment Entry", pe_doc.name, "pdc_status", new_status, update_modified=False)
@@ -438,8 +603,6 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
 
     if new_status == "Cleared":
         update_linked_pdc_events_status(pdc_doc.name, "Completed")
-
-    frappe.db.commit()
 
 
 def update_linked_pdc_events_status(pdc_name, target_status):
@@ -465,7 +628,7 @@ def update_linked_pdc_events_status(pdc_name, target_status):
         try:
             event_doc = frappe.get_doc("Event", event.name)
             event_doc.status = target_status
-            event_doc.save(ignore_permissions=True)
+            _save_with_pdc_bypass(event_doc)
         except Exception:
             frappe.log_error(
                 frappe.get_traceback(),
@@ -476,7 +639,7 @@ def update_linked_pdc_events_status(pdc_name, target_status):
 def get_unpaid_invoices(party, party_type, company):
     doctype = "Purchase Invoice" if party_type == "Supplier" else "Sales Invoice"
     filter_field = "supplier" if party_type == "Supplier" else "customer"
-    results = frappe.get_all(doctype, 
+    results = frappe.get_list(doctype,
         filters={
             filter_field: party,
             "company": company,
@@ -539,13 +702,20 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     """
     Marks PDC as 'Handed Over' and creates a corresponding Pay-type Payment Entry for the supplier.
     """
-    pdc_list = frappe.get_all("PDC", filters={"payment_entry": payment_entry_name}, fields=["name", "amount", "company", "bank_name", "bank_account"])
-    if not pdc_list:
-        frappe.throw(_("PDC record not found"))
-    
-    pdc_name = pdc_list[0].name
-    pdc_amt = pdc_list[0].amount
-    company = pdc_list[0].company
+    _require_pdc_manager(_("handover PDCs"))
+    pdc_doc = _get_pdc_by_payment_entry(payment_entry_name, lock=True)
+    _require_doc_permission(pdc_doc, "write")
+    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
+        frappe.throw(_("Finalized PDCs cannot be handed over."))
+    if not frappe.db.exists("Supplier", supplier):
+        frappe.throw(_("Supplier {0} does not exist.").format(supplier))
+    if not handover_date:
+        frappe.throw(_("Handover Date is required."))
+
+    old_status = pdc_doc.pdc_status
+    pdc_name = pdc_doc.name
+    pdc_amt = pdc_doc.amount
+    company = pdc_doc.company
 
     # Create Supplier Payment Entry (Type: Pay)
     supp_pe = frappe.new_doc("Payment Entry")
@@ -575,7 +745,7 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     # 2. Endorsed to Supplier: Dr Supplier, Cr PDC/Bank Account.
     
     # Let's use the same bank account/PDC account as the original PE.
-    orig_pe = frappe.get_doc("Payment Entry", payment_entry_name)
+    orig_pe = _get_payment_entry(payment_entry_name, "write")
     supp_pe.mode_of_payment = orig_pe.mode_of_payment
     supp_pe.paid_from = orig_pe.paid_to
     supp_pe.paid_from_account_currency = orig_pe.paid_to_account_currency
@@ -586,7 +756,6 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     
     # Populate references_table with Supplier Invoices (APPEND to existing Customer Invoices)
     # Populate purchase_references with Supplier Invoices
-    pdc_doc = frappe.get_doc("PDC", pdc_name)
     pdc_doc.pdc_status = "Handed Over"
     pdc_doc.handed_over_to_supplier = supplier
     pdc_doc.handover_date = handover_date
@@ -623,52 +792,50 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     
     # Keep the supplier PE in Draft at handover time.
     # It will be submitted/cancelled later based on actual clearance/bounce outcome.
-    supp_pe.save(ignore_permissions=True)
+    _save_with_pdc_bypass(supp_pe)
     
     pdc_doc.supplier_payment_entry = supp_pe.name
-    pdc_doc.save(ignore_permissions=True)
-
-    # Rename PDC to "Customer - Supplier"
-    customer = frappe.db.get_value("PDC", pdc_name, "customer")
-    new_pdc_name = f"{customer} - {supplier}"
-    
-    # Handle duplicates if renaming
-    if frappe.db.exists("PDC", new_pdc_name):
-        new_pdc_name = frappe.model.naming.make_autoname(new_pdc_name + "-.#####")
-    
-    frappe.rename_doc("PDC", pdc_name, new_pdc_name, force=True)
+    _append_pdc_activity(
+        pdc_doc,
+        "Handed Over",
+        old_status=old_status,
+        new_status="Handed Over",
+        details=_("Handed over to supplier {0} on {1}").format(supplier, handover_date),
+        reference_doctype="Payment Entry",
+        reference_name=supp_pe.name,
+    )
+    _save_with_pdc_bypass(pdc_doc)
     
     frappe.db.set_value("Payment Entry", payment_entry_name, "pdc_status", "Handed Over")
-    frappe.db.commit()
     return supp_pe.name
 
 
 @frappe.whitelist()
 def mark_pdc_bounced(payment_entry_name, reason=None):
-    pdc_list = frappe.get_all("PDC", filters={"payment_entry": payment_entry_name}, fields=["name", "pdc_status"])
-    if not pdc_list:
-        frappe.throw(_("PDC record not found"))
-    
-    if pdc_list[0].pdc_status == "Cleared":
+    _require_pdc_manager(_("mark PDCs as bounced"))
+    pdc_doc = _get_pdc_by_payment_entry(payment_entry_name, lock=True)
+    _require_doc_permission(pdc_doc, "write")
+    old_status = pdc_doc.pdc_status
+
+    if pdc_doc.pdc_status == "Cleared":
         frappe.throw(_("This PDC is already cleared and cannot be marked as bounced."))
-    if pdc_list[0].pdc_status in {"Bounced", "Partially Bounced"}:
+    if pdc_doc.pdc_status in {"Bounced", "Partially Bounced"}:
         frappe.throw(_("This PDC is already marked as bounced."))
 
-    pdc_doc = frappe.get_doc("PDC", pdc_list[0].name)
     target_status = "Partially Bounced" if flt(pdc_doc.cleared_amount) > 0 else "Bounced"
 
     def handle_payment_entry_on_bounce(pe_name, link_field):
         if not pe_name or not frappe.db.exists("Payment Entry", pe_name):
             return "missing"
 
-        pe_doc = frappe.get_doc("Payment Entry", pe_name)
+        pe_doc = _get_payment_entry(pe_name, "write")
 
         # Draft PE can be removed entirely because no GL is posted yet.
         if pe_doc.docstatus == 0:
             try:
                 # Unlink first to satisfy linked-doc delete checks.
                 frappe.db.set_value("PDC", pdc_doc.name, link_field, None, update_modified=False)
-                frappe.delete_doc("Payment Entry", pe_name, ignore_permissions=True)
+                _delete_with_pdc_bypass("Payment Entry", pe_name)
                 return "deleted"
             except Exception:
                 # Keep working by marking status if deletion is blocked by links.
@@ -705,8 +872,18 @@ def mark_pdc_bounced(payment_entry_name, reason=None):
     if supplier_pe_action == "deleted":
         pdc_updates["supplier_payment_entry"] = None
 
-    frappe.db.set_value("PDC", pdc_doc.name, pdc_updates)
-    frappe.db.commit()
+    for fieldname, value in pdc_updates.items():
+        pdc_doc.set(fieldname, value)
+    _append_pdc_activity(
+        pdc_doc,
+        target_status,
+        old_status=old_status,
+        new_status=target_status,
+        details=reason,
+        reference_doctype="Payment Entry",
+        reference_name=payment_entry_name,
+    )
+    _save_with_pdc_bypass(pdc_doc)
     return {
         "customer_payment_entry": customer_pe_action,
         "supplier_payment_entry": supplier_pe_action,
@@ -720,20 +897,73 @@ def mark_matured_pdc():
     pdcs = frappe.get_all(
         "PDC",
         filters={"docstatus": 1, "reference_date": ["<=", today_date], "pdc_status": "Pending"},
-        fields=["name", "payment_entry", "customer", "amount", "reference_date", "cheque_no"],
+        fields=["name", "payment_entry", "customer", "amount", "reference_date", "cheque_no", "pdc_status"],
     )
 
     for pdc in pdcs:
-        frappe.db.set_value("PDC", pdc.name, "pdc_status", "Ready for Clearance")
+        pdc_doc = frappe.get_doc("PDC", pdc.name)
+        old_status = pdc_doc.pdc_status
+        pdc_doc.pdc_status = "Ready for Clearance"
+        _append_pdc_activity(
+            pdc_doc,
+            "Marked Matured",
+            old_status=old_status,
+            new_status="Ready for Clearance",
+            details=_("Matured on {0}").format(today_date),
+        )
+        _save_with_pdc_bypass(pdc_doc)
         if pdc.payment_entry:
             frappe.db.set_value("Payment Entry", pdc.payment_entry, "pdc_status", "Ready for Clearance")
-        notify_accounts_manager(pdc)
-        notify_customer(pdc)
-    frappe.db.commit()
+        if _settings_flag("notify_accounts_managers", default=1):
+            notify_accounts_manager(pdc)
+        if _settings_flag("notify_customers", default=1):
+            notify_customer(pdc)
+
+
+@frappe.whitelist()
+def approve_pdc_clearance(pdc_name=None, payment_entry_name=None):
+    _require_pdc_manager(_("approve PDC clearance"))
+
+    if pdc_name:
+        rows = frappe.db.sql(
+            "select name from `tabPDC` where name = %s and docstatus = 1 for update",
+            (pdc_name,),
+            as_dict=True,
+        )
+        if not rows:
+            frappe.throw(_("Submitted PDC {0} was not found.").format(pdc_name))
+        pdc_doc = frappe.get_doc("PDC", rows[0].name)
+        _require_doc_permission(pdc_doc, "write")
+    elif payment_entry_name:
+        pdc_doc = _get_pdc_by_payment_entry(payment_entry_name, lock=True)
+        _require_doc_permission(pdc_doc, "write")
+    else:
+        frappe.throw(_("PDC or Payment Entry is required."))
+
+    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
+        frappe.throw(_("Finalized PDCs cannot be approved for clearance."))
+    if pdc_doc.pdc_status not in {"Ready for Clearance", "Pending"}:
+        frappe.throw(_("Only Pending or Ready for Clearance PDCs can be approved."))
+
+    old_status = pdc_doc.pdc_status
+    pdc_doc.pdc_status = "Approved for Clearance"
+    _append_pdc_activity(
+        pdc_doc,
+        "Approved for Clearance",
+        old_status=old_status,
+        new_status="Approved for Clearance",
+    )
+    _save_with_pdc_bypass(pdc_doc)
+    if pdc_doc.payment_entry:
+        frappe.db.set_value("Payment Entry", pdc_doc.payment_entry, "pdc_status", "Approved for Clearance")
+    return pdc_doc.name
 
 
 def get_accounts_managers():
-    return frappe.get_all("Has Role", filters={"role": "Accounts Manager"}, fields=["parent"], pluck="parent")
+    users = set()
+    for role in get_pdc_manager_roles():
+        users.update(frappe.get_all("Has Role", filters={"role": role}, fields=["parent"], pluck="parent"))
+    return sorted(users)
 
 
 def notify_accounts_manager(pdc):
@@ -786,6 +1016,9 @@ def notify_customer(pdc):
 
 @frappe.whitelist()
 def ensure_pdc_calendar_client_script():
+    if "System Manager" not in frappe.get_roles(frappe.session.user):
+        frappe.throw(_("Only System Manager can install or update PDC Client Scripts."), frappe.PermissionError)
+
     script = """
 frappe.ui.form.on('PDC', {
     refresh(frm) {
@@ -847,7 +1080,7 @@ frappe.ui.form.on('PDC', {
         doc.view = "Form"
         doc.enabled = 1
         doc.script = script
-        doc.save(ignore_permissions=True)
+        doc.save()
     else:
         doc = frappe.get_doc(
             {
@@ -860,6 +1093,6 @@ frappe.ui.form.on('PDC', {
                 "script_type": "Client",
             }
         )
-        doc.insert(ignore_permissions=True)
+        doc.insert()
 
     return doc.name

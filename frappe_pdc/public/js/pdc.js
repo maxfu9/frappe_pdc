@@ -40,6 +40,21 @@ frappe.ui.form.on('PDC', {
             if (!['Cleared', 'Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status)) {
 
                 // Action Buttons
+                if (['Pending', 'Ready for Clearance'].includes(frm.doc.pdc_status)) {
+                    frm.add_custom_button(__('Approve Clearance'), function () {
+                        frappe.call({
+                            method: 'frappe_pdc.pdc.approve_pdc_clearance',
+                            args: { pdc_name: frm.doc.name },
+                            callback: function (r) {
+                                if (!r.exc) {
+                                    frappe.show_alert({ message: __('PDC Approved for Clearance'), indicator: 'blue' });
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    }, __('Actions'));
+                }
+
                 frm.add_custom_button(__('Clear Cheque'), function () {
                     let total_amt = flt(frm.doc.amount);
                     let cleared_amt = flt(frm.doc.cleared_amount);
