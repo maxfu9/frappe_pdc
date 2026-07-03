@@ -43,7 +43,8 @@ fixtures = [
     {"dt": "DocType", "filters": [["name", "=", "PDC Activity"]]},
     {"dt": "Report", "filters": [["module", "=", "Frappe PDC"]]},
     {"dt": "Dashboard", "filters": [["module", "=", "Frappe PDC"]]},
-    {"dt": "Dashboard Chart", "filters": [["module", "=", "Frappe PDC"]]}
+    {"dt": "Dashboard Chart", "filters": [["module", "=", "Frappe PDC"]]},
+    {"dt": "Workspace", "filters": [["module", "=", "Frappe PDC"]]}
 ]
 
 # Scheduler Events

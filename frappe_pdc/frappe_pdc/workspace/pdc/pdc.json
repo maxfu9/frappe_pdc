@@ -1,0 +1,213 @@
+{
+  "app": "frappe_pdc",
+  "charts": [
+    {
+      "chart_name": "PDC Status Distribution",
+      "label": "PDC Status Distribution"
+    },
+    {
+      "chart_name": "PDC Amounts Over Time",
+      "label": "PDC Amounts Over Time"
+    }
+  ],
+  "content": "[{\"id\":\"pdc-shortcut-list\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC\",\"col\":3}},{\"id\":\"pdc-shortcut-new\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"New PDC\",\"col\":3}},{\"id\":\"pdc-shortcut-queue\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Clearance Queue\",\"col\":3}},{\"id\":\"pdc-shortcut-settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC Settings\",\"col\":3}},{\"id\":\"pdc-chart-status\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Status Distribution\",\"col\":6}},{\"id\":\"pdc-chart-amounts\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Amounts Over Time\",\"col\":6}},{\"id\":\"pdc-card-operations\",\"type\":\"card\",\"data\":{\"card_name\":\"Operations\",\"col\":4}},{\"id\":\"pdc-card-reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"pdc-card-recovery\",\"type\":\"card\",\"data\":{\"card_name\":\"Recovery\",\"col\":4}}]",
+  "creation": "2026-07-03 00:00:00.000000",
+  "custom_blocks": [],
+  "docstatus": 0,
+  "doctype": "Workspace",
+  "for_user": "",
+  "hide_custom": 0,
+  "icon": "file-text",
+  "idx": 0,
+  "indicator_color": "blue",
+  "is_hidden": 0,
+  "label": "PDC",
+  "links": [
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Operations",
+      "link_count": 4,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "PDC",
+      "link_count": 0,
+      "link_to": "PDC",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "PDC Settings",
+      "link_count": 0,
+      "link_to": "PDC Settings",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Clearance Queue",
+      "link_count": 0,
+      "link_to": "PDC Clearance Queue",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Ready PDCs",
+      "link_count": 0,
+      "link_to": "Ready PDCs",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Reports",
+      "link_count": 5,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Pending PDCs",
+      "link_count": 0,
+      "link_to": "Pending PDCs",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Cleared PDCs",
+      "link_count": 0,
+      "link_to": "Cleared PDCs",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Aging Summary",
+      "link_count": 0,
+      "link_to": "PDC Aging Summary",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Customer Exposure",
+      "link_count": 0,
+      "link_to": "PDC Customer Exposure",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Monthly Forecast",
+      "link_count": 0,
+      "link_to": "PDC Monthly Forecast",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Recovery",
+      "link_count": 2,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Bounced PDCs",
+      "link_count": 0,
+      "link_to": "Bounced PDCs",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Bounced Recovery",
+      "link_count": 0,
+      "link_to": "PDC Bounced Recovery",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    }
+  ],
+  "modified": "2026-07-03 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Frappe PDC",
+  "name": "PDC",
+  "number_cards": [],
+  "owner": "Administrator",
+  "parent_page": "",
+  "public": 1,
+  "quick_lists": [],
+  "roles": [
+    {
+      "role": "Accounts Manager"
+    },
+    {
+      "role": "System Manager"
+    }
+  ],
+  "sequence_id": 30.0,
+  "shortcuts": [
+    {
+      "color": "Blue",
+      "doc_view": "List",
+      "label": "PDC",
+      "link_to": "PDC",
+      "stats_filter": "[]",
+      "type": "DocType"
+    },
+    {
+      "color": "Green",
+      "doc_view": "New",
+      "label": "New PDC",
+      "link_to": "Payment Entry",
+      "type": "DocType"
+    },
+    {
+      "color": "Orange",
+      "label": "Clearance Queue",
+      "link_to": "PDC Clearance Queue",
+      "stats_filter": "[]",
+      "type": "Report"
+    },
+    {
+      "color": "Grey",
+      "doc_view": "List",
+      "label": "PDC Settings",
+      "link_to": "PDC Settings",
+      "stats_filter": "[]",
+      "type": "DocType"
+    }
+  ],
+  "title": "PDC",
+  "type": "Workspace"
+}
