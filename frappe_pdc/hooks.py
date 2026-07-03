@@ -44,6 +44,7 @@ fixtures = [
     {"dt": "Report", "filters": [["module", "=", "Frappe PDC"]]},
     {"dt": "Dashboard", "filters": [["module", "=", "Frappe PDC"]]},
     {"dt": "Dashboard Chart", "filters": [["module", "=", "Frappe PDC"]]},
+    {"dt": "Workspace Sidebar", "filters": [["module", "=", "Frappe PDC"]]},
     {"dt": "Workspace", "filters": [["module", "=", "Frappe PDC"]]}
 ]
 

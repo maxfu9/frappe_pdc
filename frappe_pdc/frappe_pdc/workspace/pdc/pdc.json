@@ -10,7 +10,7 @@
       "label": "PDC Amounts Over Time"
     }
   ],
-  "content": "[{\"id\":\"pdc-shortcut-list\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC\",\"col\":3}},{\"id\":\"pdc-shortcut-new\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"New PDC\",\"col\":3}},{\"id\":\"pdc-shortcut-queue\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Clearance Queue\",\"col\":3}},{\"id\":\"pdc-shortcut-settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC Settings\",\"col\":3}},{\"id\":\"pdc-chart-status\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Status Distribution\",\"col\":6}},{\"id\":\"pdc-chart-amounts\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Amounts Over Time\",\"col\":6}},{\"id\":\"pdc-card-operations\",\"type\":\"card\",\"data\":{\"card_name\":\"Operations\",\"col\":4}},{\"id\":\"pdc-card-reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"pdc-card-recovery\",\"type\":\"card\",\"data\":{\"card_name\":\"Recovery\",\"col\":4}}]",
+  "content": "[{\"id\":\"pdc-shortcut-list\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC List\",\"col\":3}},{\"id\":\"pdc-shortcut-new\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"New PDC\",\"col\":3}},{\"id\":\"pdc-shortcut-queue\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Clearance Queue\",\"col\":3}},{\"id\":\"pdc-shortcut-settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"PDC Settings\",\"col\":3}},{\"id\":\"pdc-chart-status\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Status Distribution\",\"col\":6}},{\"id\":\"pdc-chart-amounts\",\"type\":\"chart\",\"data\":{\"chart_name\":\"PDC Amounts Over Time\",\"col\":6}},{\"id\":\"pdc-card-operations\",\"type\":\"card\",\"data\":{\"card_name\":\"Operations\",\"col\":4}},{\"id\":\"pdc-card-reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"pdc-card-recovery\",\"type\":\"card\",\"data\":{\"card_name\":\"Recovery\",\"col\":4}}]",
   "creation": "2026-07-03 00:00:00.000000",
   "custom_blocks": [],
   "docstatus": 0,
@@ -21,7 +21,7 @@
   "idx": 0,
   "indicator_color": "blue",
   "is_hidden": 0,
-  "label": "PDC",
+  "label": "Dashboard",
   "links": [
     {
       "hidden": 0,
@@ -34,7 +34,7 @@
     {
       "hidden": 0,
       "is_query_report": 0,
-      "label": "PDC",
+      "label": "PDC List",
       "link_count": 0,
       "link_to": "PDC",
       "link_type": "DocType",
@@ -161,7 +161,7 @@
   "modified": "2026-07-03 00:00:00.000000",
   "modified_by": "Administrator",
   "module": "Frappe PDC",
-  "name": "PDC",
+  "name": "PDC Dashboard",
   "number_cards": [],
   "owner": "Administrator",
   "parent_page": "",
@@ -180,7 +180,7 @@
     {
       "color": "Blue",
       "doc_view": "List",
-      "label": "PDC",
+      "label": "PDC List",
       "link_to": "PDC",
       "stats_filter": "[]",
       "type": "DocType"
@@ -208,6 +208,6 @@
       "type": "DocType"
     }
   ],
-  "title": "PDC",
+  "title": "Dashboard",
   "type": "Workspace"
 }
