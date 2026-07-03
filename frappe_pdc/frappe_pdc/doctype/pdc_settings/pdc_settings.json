@@ -28,6 +28,32 @@
       "default": "0"
     },
     {
+      "fieldname": "allow_early_clearance",
+      "label": "Allow Early Clearance",
+      "fieldtype": "Check",
+      "default": "0",
+      "description": "Allow clearing a PDC before its cheque/reference date."
+    },
+    {
+      "fieldname": "accounting_section",
+      "fieldtype": "Section Break",
+      "label": "Accounting"
+    },
+    {
+      "fieldname": "pdc_receivable_account",
+      "label": "Default PDC Receivable Account",
+      "fieldtype": "Link",
+      "options": "Account",
+      "description": "Optional holding account copied to new PDC records for audit and future GL transfer controls."
+    },
+    {
+      "fieldname": "bounce_charges_account",
+      "label": "Bounce Charges Account",
+      "fieldtype": "Link",
+      "options": "Account",
+      "description": "Optional income/charges account reserved for bounce-fee posting."
+    },
+    {
       "fieldname": "notifications_section",
       "fieldtype": "Section Break",
       "label": "Notifications"

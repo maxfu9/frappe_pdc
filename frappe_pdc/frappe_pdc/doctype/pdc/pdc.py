@@ -4,6 +4,29 @@ from frappe.model.document import Document
 from frappe.utils import flt
 
 FINAL_STATUSES = {"Cleared", "Bounced", "Partially Bounced"}
+ALLOWED_TRANSITIONS = {
+    "Pending": {
+        "Ready for Clearance",
+        "Approved for Clearance",
+        "Handed Over",
+        "Partially Cleared",
+        "Cleared",
+        "Bounced",
+    },
+    "Ready for Clearance": {
+        "Approved for Clearance",
+        "Handed Over",
+        "Partially Cleared",
+        "Cleared",
+        "Bounced",
+    },
+    "Approved for Clearance": {"Handed Over", "Partially Cleared", "Cleared", "Bounced"},
+    "Handed Over": {"Partially Cleared", "Cleared", "Bounced"},
+    "Partially Cleared": {"Cleared", "Partially Bounced"},
+    "Cleared": set(),
+    "Bounced": set(),
+    "Partially Bounced": set(),
+}
 
 class PDC(Document):
     def autoname(self):
@@ -20,6 +43,8 @@ class PDC(Document):
         self.validate_amounts()
         self.validate_payment_entry_links()
         self.validate_duplicate_cheque()
+        self.validate_accounts()
+        self.validate_replacement_links()
         self.validate_status_transition()
 
     def set_display_title(self):
@@ -78,6 +103,40 @@ class PDC(Document):
                 )
             )
 
+    def validate_accounts(self):
+        for fieldname in ("pdc_receivable_account", "clearance_bank_account"):
+            account = self.get(fieldname)
+            if not account:
+                continue
+
+            if not frappe.db.exists("Account", account):
+                frappe.throw(_("{0} {1} does not exist.").format(self.meta.get_label(fieldname), account))
+            if frappe.db.get_value("Account", account, "is_group"):
+                frappe.throw(_("{0} cannot be a group account.").format(self.meta.get_label(fieldname)))
+
+            account_company = frappe.db.get_value("Account", account, "company")
+            if self.company and account_company and account_company != self.company:
+                frappe.throw(
+                    _("{0} {1} does not belong to company {2}.").format(
+                        self.meta.get_label(fieldname), account, self.company
+                    )
+                )
+
+    def validate_replacement_links(self):
+        for fieldname in ("replacement_pdc", "replaces_pdc"):
+            linked_pdc = self.get(fieldname)
+            if not linked_pdc:
+                continue
+
+            if linked_pdc == self.name:
+                frappe.throw(_("{0} cannot link to the same PDC.").format(self.meta.get_label(fieldname)))
+
+            linked = frappe.db.get_value("PDC", linked_pdc, ["company", "customer"], as_dict=True)
+            if not linked:
+                frappe.throw(_("Linked PDC {0} does not exist.").format(linked_pdc))
+            if linked.company != self.company or linked.customer != self.customer:
+                frappe.throw(_("Linked replacement PDC must have the same customer and company."))
+
     def validate_status_transition(self):
         previous = self.get_doc_before_save()
         if not previous:
@@ -85,6 +144,15 @@ class PDC(Document):
 
         if previous.pdc_status in FINAL_STATUSES and self.pdc_status != previous.pdc_status:
             frappe.throw(_("Finalized PDC status cannot be changed."))
+
+        if previous.pdc_status != self.pdc_status:
+            allowed = ALLOWED_TRANSITIONS.get(previous.pdc_status, set())
+            if self.pdc_status not in allowed:
+                frappe.throw(
+                    _("PDC status cannot move from {0} to {1}.").format(
+                        previous.pdc_status or _("empty"), self.pdc_status or _("empty")
+                    )
+                )
 
         if flt(self.cleared_amount) + 0.01 < flt(previous.cleared_amount):
             frappe.throw(_("Cleared Amount cannot be reduced."))

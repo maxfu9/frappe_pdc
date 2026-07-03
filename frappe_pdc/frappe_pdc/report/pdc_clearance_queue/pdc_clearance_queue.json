@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "PDC Clearance Queue",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT name AS \"PDC:Link/PDC:160\", pdc_status AS \"Status:Data:150\", customer AS \"Customer:Link/Customer:180\", cheque_no AS \"Cheque No:Data:140\", reference_date AS \"Cheque Date:Date:120\", DATEDIFF(CURDATE(), reference_date) AS \"Days Due:Int:90\", amount AS \"Amount:Currency:120\", cleared_amount AS \"Cleared:Currency:120\", (amount - IFNULL(cleared_amount, 0)) AS \"Remaining:Currency:120\", payment_entry AS \"Customer Payment Entry:Link/Payment Entry:180\", handed_over_to_supplier AS \"Endorsed Supplier:Link/Supplier:180\", supplier_payment_entry AS \"Supplier Payment Entry:Link/Payment Entry:180\", clearance_bank_account AS \"Clearance Bank Account:Link/Account:180\", pdc_receivable_account AS \"PDC Receivable Account:Link/Account:180\" FROM `tabPDC` WHERE docstatus = 1 AND pdc_status IN ('Pending', 'Ready for Clearance', 'Approved for Clearance', 'Handed Over', 'Partially Cleared') AND reference_date <= CURDATE() ORDER BY reference_date ASC, modified DESC"
+}

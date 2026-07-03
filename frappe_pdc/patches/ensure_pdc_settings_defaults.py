@@ -10,6 +10,7 @@ def execute():
 		"notify_accounts_managers": 1,
 		"notify_customers": 1,
 		"require_clearance_approval": 0,
+		"allow_early_clearance": 0,
 		"reminder_days_before_maturity": 0,
 	}
 	for fieldname, value in defaults.items():

@@ -139,6 +139,43 @@ frappe.ui.form.on('PDC', {
                     }, __('Reason for Bouncing'), __('Submit'));
                 }, __('Actions'));
             }
+
+            if (['Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status) && !frm.doc.replacement_pdc) {
+                frm.add_custom_button(__('Register Replacement'), function () {
+                    frappe.prompt([
+                        {
+                            label: __('Replacement Payment Entry'),
+                            fieldname: 'payment_entry_name',
+                            fieldtype: 'Link',
+                            options: 'Payment Entry',
+                            reqd: 1
+                        },
+                        {
+                            label: __('Re-present Date'),
+                            fieldname: 're_present_date',
+                            fieldtype: 'Date'
+                        }
+                    ], (values) => {
+                        frappe.call({
+                            method: 'frappe_pdc.pdc.register_replacement_pdc',
+                            args: {
+                                original_pdc_name: frm.doc.name,
+                                payment_entry_name: values.payment_entry_name,
+                                re_present_date: values.re_present_date
+                            },
+                            callback: function (r) {
+                                if (!r.exc) {
+                                    frappe.show_alert({
+                                        message: __('Replacement PDC {0} registered', [r.message]),
+                                        indicator: 'green'
+                                    });
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    }, __('Replacement PDC'), __('Register'));
+                }, __('Actions'));
+            }
         }
 
         // Dashboard Summary (guarded so UI errors here don't block custom buttons)
@@ -198,6 +235,16 @@ frappe.ui.form.on('PDC', {
         if (frm.doc.payment_entry) {
             frm.add_custom_button(__('View Payment Entry'), () => {
                 frappe.set_route('Form', 'Payment Entry', frm.doc.payment_entry);
+            }, __('Links'));
+        }
+        if (frm.doc.replacement_pdc) {
+            frm.add_custom_button(__('View Replacement PDC'), () => {
+                frappe.set_route('Form', 'PDC', frm.doc.replacement_pdc);
+            }, __('Links'));
+        }
+        if (frm.doc.replaces_pdc) {
+            frm.add_custom_button(__('View Original PDC'), () => {
+                frappe.set_route('Form', 'PDC', frm.doc.replaces_pdc);
             }, __('Links'));
         }
 

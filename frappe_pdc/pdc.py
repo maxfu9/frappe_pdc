@@ -4,6 +4,29 @@ from frappe import _
 
 PDC_MANAGER_DEFAULT_ROLES = ("Accounts Manager", "System Manager")
 PDC_FINAL_STATUSES = {"Cleared", "Bounced", "Partially Bounced"}
+PDC_ALLOWED_TRANSITIONS = {
+    "Pending": {
+        "Ready for Clearance",
+        "Approved for Clearance",
+        "Handed Over",
+        "Partially Cleared",
+        "Cleared",
+        "Bounced",
+    },
+    "Ready for Clearance": {
+        "Approved for Clearance",
+        "Handed Over",
+        "Partially Cleared",
+        "Cleared",
+        "Bounced",
+    },
+    "Approved for Clearance": {"Handed Over", "Partially Cleared", "Cleared", "Bounced"},
+    "Handed Over": {"Partially Cleared", "Cleared", "Bounced"},
+    "Partially Cleared": {"Cleared", "Partially Bounced"},
+    "Cleared": set(),
+    "Bounced": set(),
+    "Partially Bounced": set(),
+}
 
 
 def _split_roles(value):
@@ -31,6 +54,72 @@ def _settings_flag(fieldname, default=0):
     settings = get_pdc_settings()
     value = getattr(settings, fieldname, None)
     return int(default if value is None else value)
+
+
+def _settings_value(fieldname, default=None):
+    settings = get_pdc_settings()
+    value = getattr(settings, fieldname, None)
+    return default if value in (None, "") else value
+
+
+def _get_pdc_receivable_account(company=None):
+    account = _settings_value("pdc_receivable_account")
+    if not account:
+        return None
+
+    if not frappe.db.exists("Account", account):
+        frappe.throw(_("PDC Receivable Account {0} does not exist.").format(account))
+
+    if frappe.db.get_value("Account", account, "is_group"):
+        frappe.throw(_("PDC Receivable Account {0} cannot be a group account.").format(account))
+
+    account_company = frappe.db.get_value("Account", account, "company")
+    if company and account_company and account_company != company:
+        frappe.throw(_("PDC Receivable Account {0} does not belong to company {1}.").format(account, company))
+
+    return account
+
+
+def _validate_account_for_company(account, label, company=None):
+    if not account:
+        return
+
+    if not frappe.db.exists("Account", account):
+        frappe.throw(_("{0} {1} does not exist.").format(label, account))
+    if frappe.db.get_value("Account", account, "is_group"):
+        frappe.throw(_("{0} {1} cannot be a group account.").format(label, account))
+
+    account_company = frappe.db.get_value("Account", account, "company")
+    if company and account_company and account_company != company:
+        frappe.throw(_("{0} {1} does not belong to company {2}.").format(label, account, company))
+
+
+def _get_account_currency(account, company):
+    return frappe.db.get_value("Account", account, "account_currency") or frappe.db.get_value(
+        "Company", company, "default_currency"
+    )
+
+
+def _apply_receive_clearance_account(pe_doc, account):
+    if not account or pe_doc.payment_type != "Receive":
+        return
+
+    _validate_account_for_company(account, _("Clearance Bank Account"), pe_doc.company)
+    pe_doc.paid_to = account
+    pe_doc.paid_to_account_currency = _get_account_currency(account, pe_doc.company)
+
+
+def validate_pdc_status_transition(old_status, new_status):
+    if old_status == new_status:
+        return
+
+    allowed = PDC_ALLOWED_TRANSITIONS.get(old_status, set())
+    if new_status not in allowed:
+        frappe.throw(
+            _("PDC status cannot move from {0} to {1}.").format(
+                old_status or _("empty"), new_status or _("empty")
+            )
+        )
 
 
 def _require_pdc_manager(action):
@@ -302,6 +391,8 @@ def register_pdc(payment_entry_name):
     pdc_doc.cheque_no = doc.reference_no
     pdc_doc.bank_name = doc.bank
     pdc_doc.bank_account = doc.bank_account_no
+    if pdc_doc.meta.has_field("pdc_receivable_account"):
+        pdc_doc.pdc_receivable_account = _get_pdc_receivable_account(doc.company)
     
     # Store references in JSON and Table
     references = []
@@ -397,6 +488,16 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         frappe.throw(_("This PDC is already finalized and cannot be cleared."))
     if _settings_flag("require_clearance_approval") and pdc_doc.pdc_status != "Approved for Clearance":
         frappe.throw(_("This PDC must be approved for clearance before clearing."))
+    if (
+        pdc_doc.reference_date
+        and str(pdc_doc.reference_date) > today()
+        and not _settings_flag("allow_early_clearance")
+    ):
+        frappe.throw(
+            _("PDC {0} is dated {1}. Enable Allow Early Clearance in PDC Settings to clear it before maturity.").format(
+                pdc_doc.name, frappe.format_date(pdc_doc.reference_date)
+            )
+        )
     
     current_pe_name = pdc_doc.payment_entry
     pe_doc = _get_payment_entry(current_pe_name, "write")
@@ -449,6 +550,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
 
     new_total_cleared = previously_cleared + clear_amount
     new_status = "Cleared" if abs(new_total_cleared - total_pdc_amount) < 0.01 else "Partially Cleared"
+    validate_pdc_status_transition(old_status, new_status)
     remaining_balance = total_pdc_amount - new_total_cleared
 
     # 3. SETTLE PAYMENT ENTRIES
@@ -476,6 +578,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         cleared_pe.flags.skip_pdc_sync = True
         if mode_of_payment:
             cleared_pe.mode_of_payment = mode_of_payment
+        _apply_receive_clearance_account(cleared_pe, getattr(pdc_doc, "clearance_bank_account", None))
         _insert_with_pdc_bypass(cleared_pe)
         cleared_pe.submit()
         
@@ -512,6 +615,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                 })
         if mode_of_payment:
             pe_doc.mode_of_payment = mode_of_payment
+        _apply_receive_clearance_account(pe_doc, getattr(pdc_doc, "clearance_bank_account", None))
         _save_with_pdc_bypass(pe_doc)
         pe_doc.submit()
 
@@ -707,6 +811,7 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     _require_doc_permission(pdc_doc, "write")
     if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
         frappe.throw(_("Finalized PDCs cannot be handed over."))
+    validate_pdc_status_transition(pdc_doc.pdc_status, "Handed Over")
     if not frappe.db.exists("Supplier", supplier):
         frappe.throw(_("Supplier {0} does not exist.").format(supplier))
     if not handover_date:
@@ -823,6 +928,7 @@ def mark_pdc_bounced(payment_entry_name, reason=None):
         frappe.throw(_("This PDC is already marked as bounced."))
 
     target_status = "Partially Bounced" if flt(pdc_doc.cleared_amount) > 0 else "Bounced"
+    validate_pdc_status_transition(old_status, target_status)
 
     def handle_payment_entry_on_bounce(pe_name, link_field):
         if not pe_name or not frappe.db.exists("Payment Entry", pe_name):
@@ -903,6 +1009,7 @@ def mark_matured_pdc():
     for pdc in pdcs:
         pdc_doc = frappe.get_doc("PDC", pdc.name)
         old_status = pdc_doc.pdc_status
+        validate_pdc_status_transition(old_status, "Ready for Clearance")
         pdc_doc.pdc_status = "Ready for Clearance"
         _append_pdc_activity(
             pdc_doc,
@@ -946,6 +1053,7 @@ def approve_pdc_clearance(pdc_name=None, payment_entry_name=None):
         frappe.throw(_("Only Pending or Ready for Clearance PDCs can be approved."))
 
     old_status = pdc_doc.pdc_status
+    validate_pdc_status_transition(old_status, "Approved for Clearance")
     pdc_doc.pdc_status = "Approved for Clearance"
     _append_pdc_activity(
         pdc_doc,
@@ -957,6 +1065,84 @@ def approve_pdc_clearance(pdc_name=None, payment_entry_name=None):
     if pdc_doc.payment_entry:
         frappe.db.set_value("Payment Entry", pdc_doc.payment_entry, "pdc_status", "Approved for Clearance")
     return pdc_doc.name
+
+
+@frappe.whitelist()
+def register_replacement_pdc(original_pdc_name, payment_entry_name, re_present_date=None):
+    """
+    Register a fresh draft Payment Entry as the replacement for a bounced PDC.
+    The replacement keeps its own cheque details while linking both PDC records for audit.
+    """
+    _require_pdc_manager(_("register replacement PDCs"))
+    if not original_pdc_name or not payment_entry_name:
+        frappe.throw(_("Original PDC and replacement Payment Entry are required."))
+
+    rows = frappe.db.sql(
+        "select name from `tabPDC` where name = %s and docstatus = 1 for update",
+        (original_pdc_name,),
+        as_dict=True,
+    )
+    if not rows:
+        frappe.throw(_("Submitted PDC {0} was not found.").format(original_pdc_name))
+
+    original = frappe.get_doc("PDC", rows[0].name)
+    _require_doc_permission(original, "write")
+
+    if original.pdc_status not in {"Bounced", "Partially Bounced"}:
+        frappe.throw(_("Only bounced PDCs can receive a replacement."))
+    if getattr(original, "replacement_pdc", None):
+        frappe.throw(_("Replacement PDC {0} is already linked.").format(original.replacement_pdc))
+
+    replacement_pe = _get_payment_entry(payment_entry_name, "write")
+    if replacement_pe.party_type != "Customer":
+        frappe.throw(_("Replacement Payment Entry must be a customer receipt."))
+    if replacement_pe.party != original.customer:
+        frappe.throw(_("Replacement Payment Entry customer must match the original PDC customer."))
+    if replacement_pe.company != original.company:
+        frappe.throw(_("Replacement Payment Entry company must match the original PDC company."))
+
+    remaining_amount = flt(original.amount) - flt(original.cleared_amount)
+    if abs(flt(replacement_pe.paid_amount) - remaining_amount) > 0.01:
+        frappe.throw(
+            _("Replacement amount ({0}) must match remaining bounced amount ({1}).").format(
+                replacement_pe.paid_amount, remaining_amount
+            )
+        )
+
+    replacement_name = register_pdc(payment_entry_name)
+    replacement = frappe.get_doc("PDC", replacement_name)
+    _require_doc_permission(replacement, "write")
+
+    old_original_status = original.pdc_status
+    if original.meta.has_field("replacement_pdc"):
+        original.replacement_pdc = replacement.name
+    if re_present_date and original.meta.has_field("re_present_date"):
+        original.re_present_date = re_present_date
+    if replacement.meta.has_field("replaces_pdc"):
+        replacement.replaces_pdc = original.name
+
+    _append_pdc_activity(
+        original,
+        "Replacement Linked",
+        old_status=old_original_status,
+        new_status=original.pdc_status,
+        details=_("Replacement PDC: {0}").format(replacement.name),
+        reference_doctype="PDC",
+        reference_name=replacement.name,
+    )
+    _append_pdc_activity(
+        replacement,
+        "Registered as Replacement",
+        old_status=replacement.pdc_status,
+        new_status=replacement.pdc_status,
+        details=_("Replaces bounced PDC: {0}").format(original.name),
+        reference_doctype="PDC",
+        reference_name=original.name,
+    )
+    _save_with_pdc_bypass(original)
+    _save_with_pdc_bypass(replacement)
+
+    return replacement.name
 
 
 def get_accounts_managers():
