@@ -54,6 +54,13 @@
       "description": "Optional income/charges account reserved for bounce-fee posting."
     },
     {
+      "fieldname": "bounce_charges_item",
+      "label": "Bounce Charges Item",
+      "fieldtype": "Link",
+      "options": "Item",
+      "description": "Service item used when creating draft Sales Invoices for bounced-cheque charges."
+    },
+    {
       "fieldname": "notifications_section",
       "fieldtype": "Section Break",
       "label": "Notifications"

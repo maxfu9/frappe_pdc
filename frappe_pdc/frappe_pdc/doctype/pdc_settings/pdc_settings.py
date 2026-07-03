@@ -26,3 +26,11 @@ class PDCSettings(Document):
 				frappe.throw(_("{0} {1} does not exist.").format(self.meta.get_label(fieldname), account))
 			if frappe.db.get_value("Account", account, "is_group"):
 				frappe.throw(_("{0} cannot be a group account.").format(self.meta.get_label(fieldname)))
+
+		if self.bounce_charges_item:
+			if not frappe.db.exists("Item", self.bounce_charges_item):
+				frappe.throw(_("Bounce Charges Item {0} does not exist.").format(self.bounce_charges_item))
+			if frappe.db.get_value("Item", self.bounce_charges_item, "disabled"):
+				frappe.throw(_("Bounce Charges Item {0} is disabled.").format(self.bounce_charges_item))
+			if frappe.db.get_value("Item", self.bounce_charges_item, "is_stock_item"):
+				frappe.throw(_("Bounce Charges Item {0} must be a non-stock service item.").format(self.bounce_charges_item))

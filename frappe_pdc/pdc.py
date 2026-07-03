@@ -109,6 +109,33 @@ def _apply_receive_clearance_account(pe_doc, account):
     pe_doc.paid_to_account_currency = _get_account_currency(account, pe_doc.company)
 
 
+def _get_customer_receivable_account(customer, company):
+    account = frappe.get_value(
+        "Party Account",
+        {"parenttype": "Customer", "parent": customer, "company": company},
+        "account",
+    ) or frappe.get_value("Company", company, "default_receivable_account")
+
+    if not account:
+        frappe.throw(
+            _("Default receivable account is required for Customer {0} in company {1}.").format(
+                customer, company
+            )
+        )
+
+    _validate_account_for_company(account, _("Customer Receivable Account"), company)
+    return account
+
+
+def _get_default_cost_center(company):
+    company_meta = frappe.get_meta("Company")
+    if company_meta.has_field("cost_center"):
+        return frappe.db.get_value("Company", company, "cost_center")
+    if company_meta.has_field("default_cost_center"):
+        return frappe.db.get_value("Company", company, "default_cost_center")
+    return None
+
+
 def validate_pdc_status_transition(old_status, new_status):
     if old_status == new_status:
         return
@@ -189,7 +216,7 @@ def _save_with_pdc_bypass(doc):
 
 def _insert_with_pdc_bypass(doc):
     # All callers are internal PDC workflow paths after role and source-document checks.
-    # The bypass is needed to create system-generated split Payment Entries atomically.
+    # The bypass is needed to create system-generated Payment Entries and draft invoices atomically.
     doc.insert(ignore_permissions=True)
 
 
@@ -1143,6 +1170,177 @@ def register_replacement_pdc(original_pdc_name, payment_entry_name, re_present_d
     _save_with_pdc_bypass(replacement)
 
     return replacement.name
+
+
+@frappe.whitelist()
+def create_replacement_pdc(
+    original_pdc_name,
+    reference_no,
+    reference_date,
+    bank_name=None,
+    bank_account=None,
+    mode_of_payment=None,
+    re_present_date=None,
+):
+    """
+    Create and register a replacement Payment Entry from the remaining bounced amount.
+    The new entry stays within the PDC workflow and is linked back to the bounced PDC.
+    """
+    _require_pdc_manager(_("create replacement PDCs"))
+    if not reference_no or not reference_date:
+        frappe.throw(_("Replacement Cheque/Reference No and Cheque/Reference Date are required."))
+
+    rows = frappe.db.sql(
+        "select name from `tabPDC` where name = %s and docstatus = 1 for update",
+        (original_pdc_name,),
+        as_dict=True,
+    )
+    if not rows:
+        frappe.throw(_("Submitted PDC {0} was not found.").format(original_pdc_name))
+
+    original = frappe.get_doc("PDC", rows[0].name)
+    _require_doc_permission(original, "write")
+
+    if original.pdc_status not in {"Bounced", "Partially Bounced"}:
+        frappe.throw(_("Only bounced PDCs can receive a replacement."))
+    if getattr(original, "replacement_pdc", None):
+        frappe.throw(_("Replacement PDC {0} is already linked.").format(original.replacement_pdc))
+
+    remaining_amount = flt(original.amount) - flt(original.cleared_amount)
+    if remaining_amount <= 0:
+        frappe.throw(_("There is no remaining bounced amount to replace."))
+
+    paid_to_account = getattr(original, "pdc_receivable_account", None) or _get_pdc_receivable_account(
+        original.company
+    )
+    if not paid_to_account:
+        frappe.throw(
+            _("Set Default PDC Receivable Account in PDC Settings before creating replacement entries.")
+        )
+
+    pe_doc = frappe.new_doc("Payment Entry")
+    pe_doc.payment_type = "Receive"
+    pe_doc.party_type = "Customer"
+    pe_doc.party = original.customer
+    pe_doc.company = original.company
+    pe_doc.posting_date = today()
+    pe_doc.reference_no = reference_no
+    pe_doc.reference_date = reference_date
+    pe_doc.bank = bank_name
+    pe_doc.bank_account_no = bank_account
+    pe_doc.mode_of_payment = mode_of_payment
+    pe_doc.is_pdc = 1
+    pe_doc.pdc_status = "Pending"
+    pe_doc.paid_amount = remaining_amount
+    pe_doc.received_amount = remaining_amount
+    pe_doc.paid_from = _get_customer_receivable_account(original.customer, original.company)
+    pe_doc.paid_from_account_currency = _get_account_currency(pe_doc.paid_from, original.company)
+    pe_doc.paid_to = paid_to_account
+    pe_doc.paid_to_account_currency = _get_account_currency(paid_to_account, original.company)
+
+    has_reference = False
+    for row in original.references_table or []:
+        remaining_on_row = flt(row.allocated_amount) - flt(row.cleared_amount)
+        if remaining_on_row <= 0:
+            continue
+
+        pe_doc.append(
+            "references",
+            {
+                "reference_doctype": row.reference_doctype,
+                "reference_name": row.reference_name,
+                "allocated_amount": remaining_on_row,
+                "total_amount": row.total_amount,
+                "outstanding_amount": row.outstanding_amount,
+            },
+        )
+        has_reference = True
+
+    if not has_reference:
+        frappe.throw(_("Original PDC has no remaining invoice allocations to copy."))
+
+    _insert_with_pdc_bypass(pe_doc)
+    replacement_name = register_replacement_pdc(original.name, pe_doc.name, re_present_date)
+    return {"payment_entry": pe_doc.name, "pdc": replacement_name}
+
+
+@frappe.whitelist()
+def create_bounce_charges_invoice(pdc_name, amount=None):
+    """
+    Create a draft Sales Invoice for bounced-cheque charges.
+    Draft-only keeps the accounting posting under explicit Accounts review.
+    """
+    _require_pdc_manager(_("create bounce charge invoices"))
+    if not pdc_name:
+        frappe.throw(_("PDC is required."))
+
+    rows = frappe.db.sql(
+        "select name from `tabPDC` where name = %s and docstatus = 1 for update",
+        (pdc_name,),
+        as_dict=True,
+    )
+    if not rows:
+        frappe.throw(_("Submitted PDC {0} was not found.").format(pdc_name))
+
+    pdc_doc = frappe.get_doc("PDC", rows[0].name)
+    _require_doc_permission(pdc_doc, "write")
+
+    if pdc_doc.pdc_status not in {"Bounced", "Partially Bounced"}:
+        frappe.throw(_("Bounce charges can only be invoiced for bounced PDCs."))
+    if getattr(pdc_doc, "bounce_charges_invoice", None):
+        frappe.throw(_("Bounce charges invoice {0} is already linked.").format(pdc_doc.bounce_charges_invoice))
+
+    invoice_amount = flt(amount if amount is not None else pdc_doc.bounce_charges)
+    if invoice_amount <= 0:
+        frappe.throw(_("Bounce charges amount must be greater than zero."))
+
+    item_code = _settings_value("bounce_charges_item")
+    if not item_code:
+        frappe.throw(_("Set Bounce Charges Item in PDC Settings before creating charge invoices."))
+    if not frappe.db.exists("Item", item_code):
+        frappe.throw(_("Bounce Charges Item {0} does not exist.").format(item_code))
+    if frappe.db.get_value("Item", item_code, "is_stock_item"):
+        frappe.throw(_("Bounce Charges Item {0} must be a non-stock service item.").format(item_code))
+
+    income_account = _settings_value("bounce_charges_account")
+    if income_account:
+        _validate_account_for_company(income_account, _("Bounce Charges Account"), pdc_doc.company)
+
+    invoice = frappe.new_doc("Sales Invoice")
+    invoice.customer = pdc_doc.customer
+    invoice.company = pdc_doc.company
+    invoice.posting_date = today()
+    invoice.due_date = today()
+    invoice.remarks = _("Bounce charges for PDC {0}").format(pdc_doc.name)
+
+    row = {
+        "item_code": item_code,
+        "qty": 1,
+        "rate": invoice_amount,
+        "description": _("Bounce charges for PDC {0}").format(pdc_doc.name),
+    }
+    if income_account:
+        row["income_account"] = income_account
+    cost_center = _get_default_cost_center(pdc_doc.company)
+    if cost_center:
+        row["cost_center"] = cost_center
+    invoice.append("items", row)
+
+    _insert_with_pdc_bypass(invoice)
+    old_status = pdc_doc.pdc_status
+    pdc_doc.bounce_charges = invoice_amount
+    pdc_doc.bounce_charges_invoice = invoice.name
+    _append_pdc_activity(
+        pdc_doc,
+        "Bounce Charges Invoiced",
+        old_status=old_status,
+        new_status=pdc_doc.pdc_status,
+        details=_("Draft Sales Invoice {0} created for {1}.").format(invoice.name, invoice_amount),
+        reference_doctype="Sales Invoice",
+        reference_name=invoice.name,
+    )
+    _save_with_pdc_bypass(pdc_doc)
+    return invoice.name
 
 
 def get_accounts_managers():

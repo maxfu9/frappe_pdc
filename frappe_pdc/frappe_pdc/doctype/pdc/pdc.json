@@ -198,6 +198,15 @@
       "depends_on": "eval:doc.pdc_status == 'Bounced' || doc.pdc_status == 'Partially Bounced'"
     },
     {
+      "fieldname": "bounce_charges_invoice",
+      "label": "Bounce Charges Invoice",
+      "fieldtype": "Link",
+      "options": "Sales Invoice",
+      "read_only": 1,
+      "allow_on_submit": 1,
+      "depends_on": "eval:doc.bounce_charges_invoice"
+    },
+    {
       "fieldname": "replacement_section",
       "fieldtype": "Section Break",
       "label": "Replacement",

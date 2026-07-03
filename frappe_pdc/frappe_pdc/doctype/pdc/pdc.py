@@ -45,6 +45,7 @@ class PDC(Document):
         self.validate_duplicate_cheque()
         self.validate_accounts()
         self.validate_replacement_links()
+        self.validate_bounce_charges_invoice()
         self.validate_status_transition()
 
     def set_display_title(self):
@@ -61,6 +62,9 @@ class PDC(Document):
 
         if flt(self.cleared_amount) > flt(self.amount) + 0.01:
             frappe.throw(_("Cleared Amount cannot exceed Total Amount."))
+
+        if flt(self.bounce_charges) < 0:
+            frappe.throw(_("Bounce Charges cannot be negative."))
 
         if self.pdc_status == "Cleared" and abs(flt(self.cleared_amount) - flt(self.amount)) > 0.01:
             frappe.throw(_("PDC can only be marked Cleared when the full amount is cleared."))
@@ -136,6 +140,23 @@ class PDC(Document):
                 frappe.throw(_("Linked PDC {0} does not exist.").format(linked_pdc))
             if linked.company != self.company or linked.customer != self.customer:
                 frappe.throw(_("Linked replacement PDC must have the same customer and company."))
+
+    def validate_bounce_charges_invoice(self):
+        if not self.bounce_charges_invoice:
+            return
+
+        invoice = frappe.db.get_value(
+            "Sales Invoice",
+            self.bounce_charges_invoice,
+            ["company", "customer", "docstatus"],
+            as_dict=True,
+        )
+        if not invoice:
+            frappe.throw(_("Bounce Charges Invoice {0} does not exist.").format(self.bounce_charges_invoice))
+        if invoice.company != self.company or invoice.customer != self.customer:
+            frappe.throw(_("Bounce Charges Invoice must have the same customer and company as the PDC."))
+        if invoice.docstatus == 2:
+            frappe.throw(_("Cancelled Sales Invoice cannot be linked as Bounce Charges Invoice."))
 
     def validate_status_transition(self):
         previous = self.get_doc_before_save()

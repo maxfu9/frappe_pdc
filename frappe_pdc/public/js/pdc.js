@@ -141,6 +141,66 @@ frappe.ui.form.on('PDC', {
             }
 
             if (['Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status) && !frm.doc.replacement_pdc) {
+                frm.add_custom_button(__('Create Replacement PDC'), function () {
+                    frappe.prompt([
+                        {
+                            label: __('Cheque/Reference No'),
+                            fieldname: 'reference_no',
+                            fieldtype: 'Data',
+                            reqd: 1
+                        },
+                        {
+                            label: __('Cheque/Reference Date'),
+                            fieldname: 'reference_date',
+                            fieldtype: 'Date',
+                            reqd: 1
+                        },
+                        {
+                            label: __('Bank Name'),
+                            fieldname: 'bank_name',
+                            fieldtype: 'Data'
+                        },
+                        {
+                            label: __('Customer Bank Account'),
+                            fieldname: 'bank_account',
+                            fieldtype: 'Data'
+                        },
+                        {
+                            label: __('Mode of Payment'),
+                            fieldname: 'mode_of_payment',
+                            fieldtype: 'Link',
+                            options: 'Mode of Payment'
+                        },
+                        {
+                            label: __('Re-present Date'),
+                            fieldname: 're_present_date',
+                            fieldtype: 'Date'
+                        }
+                    ], (values) => {
+                        frappe.call({
+                            method: 'frappe_pdc.pdc.create_replacement_pdc',
+                            args: {
+                                original_pdc_name: frm.doc.name,
+                                reference_no: values.reference_no,
+                                reference_date: values.reference_date,
+                                bank_name: values.bank_name,
+                                bank_account: values.bank_account,
+                                mode_of_payment: values.mode_of_payment,
+                                re_present_date: values.re_present_date
+                            },
+                            callback: function (r) {
+                                if (!r.exc && r.message) {
+                                    frappe.show_alert({
+                                        message: __('Replacement PDC {0} created', [r.message.pdc]),
+                                        indicator: 'green'
+                                    });
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    }, __('Create Replacement PDC'), __('Create'));
+                }, __('Actions'));
+
                 frm.add_custom_button(__('Register Replacement'), function () {
                     frappe.prompt([
                         {
@@ -174,6 +234,37 @@ frappe.ui.form.on('PDC', {
                             }
                         });
                     }, __('Replacement PDC'), __('Register'));
+                }, __('Actions'));
+            }
+
+            if (['Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status) && !frm.doc.bounce_charges_invoice) {
+                frm.add_custom_button(__('Create Bounce Charge Invoice'), function () {
+                    frappe.prompt([
+                        {
+                            label: __('Bounce Charges'),
+                            fieldname: 'amount',
+                            fieldtype: 'Currency',
+                            default: flt(frm.doc.bounce_charges),
+                            reqd: 1
+                        }
+                    ], (values) => {
+                        frappe.call({
+                            method: 'frappe_pdc.pdc.create_bounce_charges_invoice',
+                            args: {
+                                pdc_name: frm.doc.name,
+                                amount: values.amount
+                            },
+                            callback: function (r) {
+                                if (!r.exc && r.message) {
+                                    frappe.show_alert({
+                                        message: __('Draft Sales Invoice {0} created', [r.message]),
+                                        indicator: 'green'
+                                    });
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    }, __('Bounce Charge Invoice'), __('Create Draft'));
                 }, __('Actions'));
             }
         }
@@ -245,6 +336,11 @@ frappe.ui.form.on('PDC', {
         if (frm.doc.replaces_pdc) {
             frm.add_custom_button(__('View Original PDC'), () => {
                 frappe.set_route('Form', 'PDC', frm.doc.replaces_pdc);
+            }, __('Links'));
+        }
+        if (frm.doc.bounce_charges_invoice) {
+            frm.add_custom_button(__('View Bounce Charge Invoice'), () => {
+                frappe.set_route('Form', 'Sales Invoice', frm.doc.bounce_charges_invoice);
             }, __('Links'));
         }
 
