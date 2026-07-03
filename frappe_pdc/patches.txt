@@ -8,3 +8,4 @@ frappe_pdc.patches.setup_pdc_settings_and_titles
 frappe_pdc.patches.ensure_pdc_settings_defaults
 frappe_pdc.patches.ensure_pdc_followup_defaults
 frappe_pdc.patches.rename_pdc_workspace_dashboard
+frappe_pdc.patches.fix_pdc_dashboard_workspace_title
