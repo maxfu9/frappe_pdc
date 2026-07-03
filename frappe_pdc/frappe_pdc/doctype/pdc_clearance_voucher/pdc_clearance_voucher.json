@@ -1,0 +1,61 @@
+{
+  "doctype": "DocType",
+  "name": "PDC Clearance Voucher",
+  "module": "Frappe PDC",
+  "istable": 1,
+  "editable_grid": 1,
+  "fields": [
+    {
+      "fieldname": "posting_datetime",
+      "label": "Posting Time",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "voucher_type",
+      "label": "Voucher Type",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "in_list_view": 1,
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "voucher_no",
+      "label": "Voucher No",
+      "fieldtype": "Dynamic Link",
+      "options": "voucher_type",
+      "in_list_view": 1,
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "amount",
+      "label": "Amount",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "party_type",
+      "label": "Party Type",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "read_only": 1
+    },
+    {
+      "fieldname": "party",
+      "label": "Party",
+      "fieldtype": "Dynamic Link",
+      "options": "party_type",
+      "read_only": 1
+    },
+    {
+      "fieldname": "remarks",
+      "label": "Remarks",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    }
+  ]
+}

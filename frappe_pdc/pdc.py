@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import add_days, flt, getdate, now_datetime, today
+from frappe.utils import add_days, escape_html, flt, getdate, now_datetime, today
 from frappe import _
 
 PDC_MANAGER_DEFAULT_ROLES = ("Accounts Manager", "System Manager")
@@ -297,6 +297,63 @@ def _append_pdc_activity(
             "reference_name": reference_name,
         },
     )
+
+
+def _append_clearance_voucher(
+    pdc_doc,
+    voucher_type,
+    voucher_no,
+    amount,
+    party_type=None,
+    party=None,
+    remarks=None,
+):
+    if not pdc_doc.meta.has_field("clearance_vouchers") or not voucher_no:
+        return
+
+    for row in pdc_doc.get("clearance_vouchers") or []:
+        if row.voucher_type == voucher_type and row.voucher_no == voucher_no:
+            return
+
+    pdc_doc.append(
+        "clearance_vouchers",
+        {
+            "posting_datetime": now_datetime(),
+            "voucher_type": voucher_type,
+            "voucher_no": voucher_no,
+            "amount": amount,
+            "party_type": party_type,
+            "party": party,
+            "remarks": remarks,
+        },
+    )
+
+
+def _cancel_submitted_voucher(voucher_type, voucher_no):
+    if not voucher_type or not voucher_no or not frappe.db.exists(voucher_type, voucher_no):
+        return
+
+    doc = frappe.get_doc(voucher_type, voucher_no)
+    if doc.docstatus != 1:
+        return
+
+    # PDC cancellation is restricted to PDC manager roles; these vouchers are
+    # system-created clearance documents and must be reversed with the PDC.
+    doc.flags.ignore_permissions = True
+    doc.cancel()
+
+
+def cancel_pdc_clearance_vouchers(pdc_doc):
+    seen = set()
+    for row in pdc_doc.get("clearance_vouchers") or []:
+        key = (row.voucher_type, row.voucher_no)
+        if key in seen:
+            continue
+        seen.add(key)
+        _cancel_submitted_voucher(row.voucher_type, row.voucher_no)
+
+    if getattr(pdc_doc, "last_clearance_journal_entry", None):
+        _cancel_submitted_voucher("Journal Entry", pdc_doc.last_clearance_journal_entry)
 
 
 # -----------------------------
@@ -635,6 +692,8 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     validate_pdc_status_transition(old_status, new_status)
     remaining_balance = total_pdc_amount - new_total_cleared
     clearance_journal = None
+    primary_reference_doctype = None
+    primary_reference_name = None
 
     # 3. SETTLE PAYMENT ENTRIES
     # --- CUSTOMER SIDE (Master: pe_doc) ---
@@ -667,8 +726,28 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
             _apply_receive_clearance_account(cleared_pe, getattr(pdc_doc, "clearance_bank_account", None))
         _insert_with_pdc_bypass(cleared_pe)
         cleared_pe.submit()
+        _append_clearance_voucher(
+            pdc_doc,
+            "Payment Entry",
+            cleared_pe.name,
+            clear_amount,
+            cleared_pe.party_type,
+            cleared_pe.party,
+            _("Customer clearance"),
+        )
+        primary_reference_doctype = "Payment Entry"
+        primary_reference_name = cleared_pe.name
         if pdc_receivable_account and not has_supplier_flow:
             clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
+            _append_clearance_voucher(
+                pdc_doc,
+                "Journal Entry",
+                clearance_journal.name,
+                clear_amount,
+                remarks=_("Holding account transfer to bank"),
+            )
+            primary_reference_doctype = "Journal Entry"
+            primary_reference_name = clearance_journal.name
         
         # B. Adjust the ORIGINAL PE (Master Draft) to the REMAINDER
         pe_doc.paid_amount = remaining_balance
@@ -709,8 +788,28 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
             _apply_receive_clearance_account(pe_doc, getattr(pdc_doc, "clearance_bank_account", None))
         _save_with_pdc_bypass(pe_doc)
         pe_doc.submit()
+        _append_clearance_voucher(
+            pdc_doc,
+            "Payment Entry",
+            pe_doc.name,
+            clear_amount,
+            pe_doc.party_type,
+            pe_doc.party,
+            _("Customer clearance"),
+        )
+        primary_reference_doctype = "Payment Entry"
+        primary_reference_name = pe_doc.name
         if pdc_receivable_account and not has_supplier_flow:
             clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
+            _append_clearance_voucher(
+                pdc_doc,
+                "Journal Entry",
+                clearance_journal.name,
+                clear_amount,
+                remarks=_("Holding account transfer to bank"),
+            )
+            primary_reference_doctype = "Journal Entry"
+            primary_reference_name = clearance_journal.name
 
     # --- SUPPLIER SIDE (if handed over) ---
     if pdc_doc.supplier_payment_entry:
@@ -742,6 +841,15 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                     cleared_supp_pe.mode_of_payment = mode_of_payment
                 _insert_with_pdc_bypass(cleared_supp_pe)
                 cleared_supp_pe.submit()
+                _append_clearance_voucher(
+                    pdc_doc,
+                    "Payment Entry",
+                    cleared_supp_pe.name,
+                    clear_amount,
+                    cleared_supp_pe.party_type,
+                    cleared_supp_pe.party,
+                    _("Supplier handover clearance"),
+                )
                 
                 # Adjust Master Supplier Draft
                 supp_pe.paid_amount = remaining_balance
@@ -778,6 +886,15 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                     supp_pe.mode_of_payment = mode_of_payment
                 _save_with_pdc_bypass(supp_pe)
                 supp_pe.submit()
+                _append_clearance_voucher(
+                    pdc_doc,
+                    "Payment Entry",
+                    supp_pe.name,
+                    clear_amount,
+                    supp_pe.party_type,
+                    supp_pe.party,
+                    _("Supplier handover clearance"),
+                )
 
     # 4. FINAL SAVE
     pdc_doc.cleared_amount = new_total_cleared
@@ -790,8 +907,8 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         old_status=old_status,
         new_status=new_status,
         details=_("Cleared amount: {0}").format(clear_amount),
-        reference_doctype="Journal Entry" if clearance_journal else "Payment Entry",
-        reference_name=clearance_journal.name if clearance_journal else pe_doc.name,
+        reference_doctype=primary_reference_doctype or "Payment Entry",
+        reference_name=primary_reference_name or pe_doc.name,
     )
     _save_with_pdc_bypass(pdc_doc)
     
@@ -853,49 +970,6 @@ def get_unpaid_invoices(party, party_type, company):
     return results
 
 
-def reconcile_payment(pe_doc, ref, amt_to_reconcile):
-    from erpnext.accounts.utils import reconcile_against_document
-    
-    outstanding = frappe.db.get_value(ref["reference_doctype"], ref["reference_name"], "outstanding_amount")
-    if not outstanding or outstanding <= 0:
-        return
-
-    amt = flt(min(amt_to_reconcile, outstanding))
-    if amt <= 0: return
-    
-    party_account = frappe.db.get_value(
-        ref["reference_doctype"], 
-        ref["reference_name"], 
-        "debit_to" if ref["reference_doctype"] == "Sales Invoice" else "credit_to"
-    )
-    grand_total = frappe.db.get_value(ref["reference_doctype"], ref["reference_name"], "grand_total")
-
-    try:
-        reconcile_against_document([frappe._dict({
-            "voucher_type": "Payment Entry",
-            "voucher_no": pe_doc.name,
-            "voucher_detail_no": None,
-            "party_type": ref.get("party_type") or pe_doc.party_type,
-            "party": ref.get("party") or pe_doc.party,
-            "unreconciled_amount": pe_doc.unallocated_amount,
-            "unadjusted_amount": pe_doc.unallocated_amount,
-            "against_voucher_type": ref["reference_doctype"],
-            "against_voucher": ref["reference_name"],
-            "allocated_amount": amt,
-            "grand_total": grand_total,
-            "outstanding_amount": outstanding,
-            "account": party_account,
-            "difference_amount": 0,
-            "difference_posting_date": pe_doc.posting_date,
-            "exchange_rate": pe_doc.target_exchange_rate if pe_doc.payment_type == "Receive" else pe_doc.source_exchange_rate,
-            "precision": frappe.get_precision("Payment Entry Reference", "allocated_amount")
-        })])
-        pe_doc.load_from_db() 
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "PDC Reconciliation Error")
-        frappe.msgprint(_("Warning: Could not fully reconcile {0}: {1}").format(ref['reference_name'], str(e)))
-
-
 @frappe.whitelist()
 def handover_pdc(payment_entry_name, supplier, handover_date):
     """
@@ -944,15 +1018,26 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     # 1. Received from Customer: Dr PDC/Bank Account, Cr Customer.
     # 2. Endorsed to Supplier: Dr Supplier, Cr PDC/Bank Account.
     
-    # Let's use the same bank account/PDC account as the original PE.
     orig_pe = _get_payment_entry(payment_entry_name, "write")
     supp_pe.mode_of_payment = orig_pe.mode_of_payment
-    supp_pe.paid_from = orig_pe.paid_to
-    supp_pe.paid_from_account_currency = orig_pe.paid_to_account_currency
+    paid_from_account = getattr(pdc_doc, "pdc_receivable_account", None) or orig_pe.paid_to
+    if not paid_from_account:
+        frappe.throw(_("PDC holding/paid-from account is required before handover."))
+    _validate_account_for_company(paid_from_account, _("Supplier Payment Paid From Account"), company)
+    supp_pe.paid_from = paid_from_account
+    supp_pe.paid_from_account_currency = _get_account_currency(paid_from_account, company)
     
     # Fetch Supplier default payable account
-    supp_pe.paid_to = frappe.get_value("Party Account", {"parent": supplier, "company": company}, "account") or \
-                      frappe.get_value("Company", company, "default_payable_account")
+    payable_account = frappe.get_value(
+        "Party Account",
+        {"parenttype": "Supplier", "parent": supplier, "company": company},
+        "account",
+    ) or frappe.get_value("Company", company, "default_payable_account")
+    if not payable_account:
+        frappe.throw(_("Default payable account is required for Supplier {0} in company {1}.").format(supplier, company))
+    _validate_account_for_company(payable_account, _("Supplier Payable Account"), company)
+    supp_pe.paid_to = payable_account
+    supp_pe.paid_to_account_currency = _get_account_currency(payable_account, company)
     
     # Populate references_table with Supplier Invoices (APPEND to existing Customer Invoices)
     # Populate purchase_references with Supplier Invoices
@@ -1129,17 +1214,23 @@ def _send_manager_pdc_notice(pdc_doc, subject, message):
     frappe.sendmail(recipients=managers, subject=subject, message=message)
 
 
+def _html(value):
+    if value is None:
+        return ""
+    return escape_html(frappe.safe_decode(value))
+
+
 def _pdc_notice_message(pdc_doc, intro):
     return f"""
         <div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
-            <p>{intro}</p>
+            <p>{_html(intro)}</p>
             <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.name}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.customer}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.cheque_no or 'N/A'}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Reference Date</b></td><td style="padding: 8px; border: 1px solid #ddd;">{frappe.format_date(pdc_doc.reference_date)}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Status</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.pdc_status}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{frappe.format_value(pdc_doc.amount, {'fieldtype': 'Currency'})}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.name)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.customer)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.cheque_no or 'N/A')}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Reference Date</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(frappe.format_date(pdc_doc.reference_date))}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Status</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.pdc_status)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(frappe.format_value(pdc_doc.amount, {'fieldtype': 'Currency'}))}</td></tr>
             </table>
         </div>
     """
@@ -1200,7 +1291,7 @@ def send_pdc_followup_notifications():
             fields=["name"],
         ):
             pdc_doc = frappe.get_doc("PDC", row.name)
-            if pdc_doc.overdue_alert_sent_on and getdate(pdc_doc.overdue_alert_sent_on) == today_date:
+            if pdc_doc.overdue_alert_sent_on:
                 continue
             _send_manager_pdc_notice(
                 pdc_doc,
@@ -1252,7 +1343,7 @@ def send_pdc_followup_notifications():
             fields=["name"],
         ):
             pdc_doc = frappe.get_doc("PDC", row.name)
-            if pdc_doc.replacement_followup_sent_on and getdate(pdc_doc.replacement_followup_sent_on) == today_date:
+            if pdc_doc.replacement_followup_sent_on:
                 continue
             _send_manager_pdc_notice(
                 pdc_doc,
@@ -1572,11 +1663,11 @@ def notify_accounts_manager(pdc):
             <h2 style="color: #444;">{_('Post-Dated Cheque Reminder')}</h2>
             <p>{_('The following PDC is dated today and is ready for clearance:')}</p>
             <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC Number</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc.name}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc.customer}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc.cheque_no or 'N/A'}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{frappe.format_value(pdc.amount, {'fieldtype': 'Currency'})}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Payment Entry</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc.payment_entry}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC Number</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc.name)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc.customer)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc.cheque_no or 'N/A')}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(frappe.format_value(pdc.amount, {'fieldtype': 'Currency'}))}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Payment Entry</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc.payment_entry)}</td></tr>
             </table>
             <p style="margin-top: 20px;">{_('Please take appropriate action in the system.')}</p>
         </div>
@@ -1601,9 +1692,9 @@ def notify_customer(pdc):
     message = f"""
         <div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
             <p>{_('Dear Valued Customer,')}</p>
-            <p>{_('This is a polite reminder that your cheque')} <b>#{pdc.cheque_no or ''}</b> {_('for the amount of')} 
-            <b>{frappe.format_value(pdc.amount, {'fieldtype': 'Currency'})}</b> {_('is dated today,')} 
-            <b>{frappe.format_date(pdc.reference_date)}</b>, {_('and will be presented for clearance.')}</p>
+            <p>{_('This is a polite reminder that your cheque')} <b>#{_html(pdc.cheque_no or '')}</b> {_('for the amount of')}
+            <b>{_html(frappe.format_value(pdc.amount, {'fieldtype': 'Currency'}))}</b> {_('is dated today,')}
+            <b>{_html(frappe.format_date(pdc.reference_date))}</b>, {_('and will be presented for clearance.')}</p>
             <p>{_('Please ensure sufficient funds are available in your account.')}</p>
             <p>{_('Thank you for your business!')}</p>
         </div>

@@ -179,6 +179,10 @@ class PDC(Document):
             frappe.throw(_("Cleared Amount cannot be reduced."))
 
     def on_cancel(self):
+        from frappe_pdc.pdc import cancel_pdc_clearance_vouchers
+
+        cancel_pdc_clearance_vouchers(self)
+
         # 1. Cancel Supplier Payment Entry if handed over
         if self.supplier_payment_entry:
             supp_pe_status = frappe.db.get_value("Payment Entry", self.supplier_payment_entry, "docstatus")

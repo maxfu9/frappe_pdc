@@ -55,11 +55,25 @@ frappe.ui.form.on('Payment Entry', {
                                 frappe.db.get_value('PDC', r.message, ['amount', 'cleared_amount'], (pdc) => {
                                     let rem = flt(pdc.amount) - flt(pdc.cleared_amount);
                                     frappe.prompt([
-                                        { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', default: rem, reqd: 1 }
+                                        { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', default: rem, reqd: 1 },
+                                        { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Link', options: 'Mode of Payment', reqd: 1 }
                                     ], (values) => {
+                                        let entered_amt = flt(values.amt);
+                                        if (entered_amt <= 0) {
+                                            frappe.msgprint(__('Amount must be greater than zero'));
+                                            return;
+                                        }
+                                        if (entered_amt > rem + 0.01) {
+                                            frappe.msgprint(__('Amount cannot exceed remaining balance of {0}', [rem]));
+                                            return;
+                                        }
                                         frappe.call({
                                             method: 'frappe_pdc.pdc.clear_pdc',
-                                            args: { payment_entry_name: frm.doc.name, clear_amount: values.amt },
+                                            args: {
+                                                payment_entry_name: frm.doc.name,
+                                                clear_amount: entered_amt,
+                                                mode_of_payment: values.mode_of_payment
+                                            },
                                             callback: function (r) {
                                                 if (!r.exc) {
                                                     frappe.show_alert({ message: __('PDC Cleared'), indicator: 'green' });
