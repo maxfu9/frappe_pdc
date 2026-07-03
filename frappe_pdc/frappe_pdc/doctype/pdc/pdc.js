@@ -343,6 +343,11 @@ frappe.ui.form.on('PDC', {
                 frappe.set_route('Form', 'Sales Invoice', frm.doc.bounce_charges_invoice);
             }, __('Links'));
         }
+        if (frm.doc.last_clearance_journal_entry) {
+            frm.add_custom_button(__('View Clearance Journal Entry'), () => {
+                frappe.set_route('Form', 'Journal Entry', frm.doc.last_clearance_journal_entry);
+            }, __('Links'));
+        }
 
     },
     setup: function (frm) {

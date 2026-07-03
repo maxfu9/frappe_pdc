@@ -126,6 +126,14 @@
       "allow_on_submit": 1
     },
     {
+      "fieldname": "last_clearance_journal_entry",
+      "label": "Last Clearance Journal Entry",
+      "fieldtype": "Link",
+      "options": "Journal Entry",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
       "fieldname": "section_handover",
       "fieldtype": "Section Break",
       "label": "Handover to Supplier",
@@ -243,6 +251,40 @@
       "label": "Status History",
       "fieldtype": "Table",
       "options": "PDC Activity",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "notification_tracking_section",
+      "fieldtype": "Section Break",
+      "label": "Notification Tracking",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "maturity_reminder_sent_on",
+      "label": "Maturity Reminder Sent On",
+      "fieldtype": "Date",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "overdue_alert_sent_on",
+      "label": "Overdue Alert Sent On",
+      "fieldtype": "Date",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "bounce_alert_sent_on",
+      "label": "Bounce Alert Sent On",
+      "fieldtype": "Date",
+      "read_only": 1,
+      "allow_on_submit": 1
+    },
+    {
+      "fieldname": "replacement_followup_sent_on",
+      "label": "Replacement Follow-up Sent On",
+      "fieldtype": "Date",
       "read_only": 1,
       "allow_on_submit": 1
     }

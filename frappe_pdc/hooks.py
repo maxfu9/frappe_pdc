@@ -47,6 +47,7 @@ fixtures = [
 # Scheduler Events
 scheduler_events = {
     "daily": [
-        "frappe_pdc.pdc.mark_matured_pdc"
+        "frappe_pdc.pdc.mark_matured_pdc",
+        "frappe_pdc.pdc.send_pdc_followup_notifications",
     ]
 }

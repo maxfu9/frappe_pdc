@@ -82,7 +82,37 @@
       "label": "Reminder Days Before Maturity",
       "fieldtype": "Int",
       "default": "0",
-      "description": "Reserved for pre-maturity reminders."
+      "description": "Send pre-maturity reminders this many days before cheque/reference date."
+    },
+    {
+      "fieldname": "notify_overdue_pdcs",
+      "label": "Notify PDC Managers on Overdue Clearance",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "overdue_grace_days",
+      "label": "Overdue Grace Days",
+      "fieldtype": "Int",
+      "default": "1"
+    },
+    {
+      "fieldname": "notify_bounced_pdcs",
+      "label": "Notify PDC Managers on Bounce",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "notify_replacement_followup",
+      "label": "Notify PDC Managers for Replacement Follow-up",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "replacement_followup_days",
+      "label": "Replacement Follow-up Days",
+      "fieldtype": "Int",
+      "default": "3"
     }
   ],
   "permissions": [

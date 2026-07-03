@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "PDC Bounced Recovery",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT name AS \"PDC:Link/PDC:160\", customer AS \"Customer:Link/Customer:180\", cheque_no AS \"Cheque No:Data:130\", reference_date AS \"Cheque Date:Date:120\", amount AS \"Amount:Currency:120\", cleared_amount AS \"Cleared:Currency:120\", (amount - IFNULL(cleared_amount, 0)) AS \"Recovery Amount:Currency:130\", bounced_reason AS \"Reason:Data:220\", replacement_pdc AS \"Replacement PDC:Link/PDC:160\", bounce_charges_invoice AS \"Bounce Invoice:Link/Sales Invoice:160\", pdc_status AS \"Status:Data:140\" FROM `tabPDC` WHERE docstatus = 1 AND pdc_status IN ('Bounced', 'Partially Bounced') ORDER BY reference_date DESC"
+}

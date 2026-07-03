@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "PDC Monthly Forecast",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT DATE_FORMAT(reference_date, '%Y-%m') AS \"Month:Data:100\", COUNT(name) AS \"PDC Count:Int:90\", SUM(amount) AS \"Total Amount:Currency:130\", SUM(IFNULL(cleared_amount, 0)) AS \"Already Cleared:Currency:130\", SUM(amount - IFNULL(cleared_amount, 0)) AS \"Expected Clearance:Currency:150\" FROM `tabPDC` WHERE docstatus = 1 AND pdc_status NOT IN ('Cleared', 'Bounced', 'Partially Bounced') GROUP BY DATE_FORMAT(reference_date, '%Y-%m') ORDER BY DATE_FORMAT(reference_date, '%Y-%m') ASC"
+}

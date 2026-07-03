@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import flt, now_datetime, today
+from frappe.utils import add_days, flt, getdate, now_datetime, today
 from frappe import _
 
 PDC_MANAGER_DEFAULT_ROLES = ("Accounts Manager", "System Manager")
@@ -109,6 +109,15 @@ def _apply_receive_clearance_account(pe_doc, account):
     pe_doc.paid_to_account_currency = _get_account_currency(account, pe_doc.company)
 
 
+def _apply_pdc_receivable_account(pe_doc, account):
+    if not account or pe_doc.payment_type != "Receive":
+        return
+
+    _validate_account_for_company(account, _("PDC Receivable Account"), pe_doc.company)
+    pe_doc.paid_to = account
+    pe_doc.paid_to_account_currency = _get_account_currency(account, pe_doc.company)
+
+
 def _get_customer_receivable_account(customer, company):
     account = frappe.get_value(
         "Party Account",
@@ -134,6 +143,43 @@ def _get_default_cost_center(company):
     if company_meta.has_field("default_cost_center"):
         return frappe.db.get_value("Company", company, "default_cost_center")
     return None
+
+
+def _submit_holding_to_bank_journal(pdc_doc, amount, posting_date=None):
+    pdc_account = getattr(pdc_doc, "pdc_receivable_account", None)
+    bank_account = getattr(pdc_doc, "clearance_bank_account", None)
+    if not pdc_account:
+        return None
+    if not bank_account:
+        frappe.throw(_("Clearance Bank Account is required to transfer PDC holding amount to bank."))
+
+    _validate_account_for_company(pdc_account, _("PDC Receivable Account"), pdc_doc.company)
+    _validate_account_for_company(bank_account, _("Clearance Bank Account"), pdc_doc.company)
+
+    journal = frappe.new_doc("Journal Entry")
+    journal.voucher_type = "Bank Entry"
+    journal.company = pdc_doc.company
+    journal.posting_date = posting_date or today()
+    journal.cheque_no = pdc_doc.cheque_no
+    journal.cheque_date = pdc_doc.reference_date
+    journal.user_remark = _("Transfer cleared PDC {0} from holding account to bank.").format(pdc_doc.name)
+    journal.append(
+        "accounts",
+        {
+            "account": bank_account,
+            "debit_in_account_currency": amount,
+        },
+    )
+    journal.append(
+        "accounts",
+        {
+            "account": pdc_account,
+            "credit_in_account_currency": amount,
+        },
+    )
+    _insert_with_pdc_bypass(journal)
+    journal.submit()
+    return journal
 
 
 def validate_pdc_status_transition(old_status, new_status):
@@ -418,8 +464,13 @@ def register_pdc(payment_entry_name):
     pdc_doc.cheque_no = doc.reference_no
     pdc_doc.bank_name = doc.bank
     pdc_doc.bank_account = doc.bank_account_no
+    pdc_receivable_account = None
     if pdc_doc.meta.has_field("pdc_receivable_account"):
-        pdc_doc.pdc_receivable_account = _get_pdc_receivable_account(doc.company)
+        pdc_receivable_account = _get_pdc_receivable_account(doc.company)
+        pdc_doc.pdc_receivable_account = pdc_receivable_account
+        if pdc_receivable_account:
+            _apply_pdc_receivable_account(doc, pdc_receivable_account)
+            _save_with_pdc_bypass(doc)
     
     # Store references in JSON and Table
     references = []
@@ -548,6 +599,10 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         frappe.throw(_("Clearance amount ({0}) exceeds remaining PDC amount ({1})").format(clear_amount, remaining_to_clear))
     if mode_of_payment and not frappe.db.exists("Mode of Payment", mode_of_payment):
         frappe.throw(_("Mode of Payment {0} does not exist.").format(mode_of_payment))
+    pdc_receivable_account = getattr(pdc_doc, "pdc_receivable_account", None)
+    has_supplier_flow = bool(pdc_doc.supplier_payment_entry)
+    if pdc_receivable_account and not has_supplier_flow and not getattr(pdc_doc, "clearance_bank_account", None):
+        frappe.throw(_("Clearance Bank Account is required when clearing a PDC through the holding account."))
 
     # 2. IN-MEMORY UPDATES & DELTA TRACKING (No Saves yet)
     to_distribute = clear_amount
@@ -579,6 +634,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     new_status = "Cleared" if abs(new_total_cleared - total_pdc_amount) < 0.01 else "Partially Cleared"
     validate_pdc_status_transition(old_status, new_status)
     remaining_balance = total_pdc_amount - new_total_cleared
+    clearance_journal = None
 
     # 3. SETTLE PAYMENT ENTRIES
     # --- CUSTOMER SIDE (Master: pe_doc) ---
@@ -605,9 +661,14 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         cleared_pe.flags.skip_pdc_sync = True
         if mode_of_payment:
             cleared_pe.mode_of_payment = mode_of_payment
-        _apply_receive_clearance_account(cleared_pe, getattr(pdc_doc, "clearance_bank_account", None))
+        if pdc_receivable_account:
+            _apply_pdc_receivable_account(cleared_pe, pdc_receivable_account)
+        else:
+            _apply_receive_clearance_account(cleared_pe, getattr(pdc_doc, "clearance_bank_account", None))
         _insert_with_pdc_bypass(cleared_pe)
         cleared_pe.submit()
+        if pdc_receivable_account and not has_supplier_flow:
+            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
         
         # B. Adjust the ORIGINAL PE (Master Draft) to the REMAINDER
         pe_doc.paid_amount = remaining_balance
@@ -642,9 +703,14 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
                 })
         if mode_of_payment:
             pe_doc.mode_of_payment = mode_of_payment
-        _apply_receive_clearance_account(pe_doc, getattr(pdc_doc, "clearance_bank_account", None))
+        if pdc_receivable_account:
+            _apply_pdc_receivable_account(pe_doc, pdc_receivable_account)
+        else:
+            _apply_receive_clearance_account(pe_doc, getattr(pdc_doc, "clearance_bank_account", None))
         _save_with_pdc_bypass(pe_doc)
         pe_doc.submit()
+        if pdc_receivable_account and not has_supplier_flow:
+            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
 
     # --- SUPPLIER SIDE (if handed over) ---
     if pdc_doc.supplier_payment_entry:
@@ -716,14 +782,16 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     # 4. FINAL SAVE
     pdc_doc.cleared_amount = new_total_cleared
     pdc_doc.pdc_status = new_status
+    if clearance_journal and pdc_doc.meta.has_field("last_clearance_journal_entry"):
+        pdc_doc.last_clearance_journal_entry = clearance_journal.name
     _append_pdc_activity(
         pdc_doc,
         "Cleared" if new_status == "Cleared" else "Partially Cleared",
         old_status=old_status,
         new_status=new_status,
         details=_("Cleared amount: {0}").format(clear_amount),
-        reference_doctype="Payment Entry",
-        reference_name=pe_doc.name,
+        reference_doctype="Journal Entry" if clearance_journal else "Payment Entry",
+        reference_name=clearance_journal.name if clearance_journal else pe_doc.name,
     )
     _save_with_pdc_bypass(pdc_doc)
     
@@ -1052,6 +1120,151 @@ def mark_matured_pdc():
             notify_accounts_manager(pdc)
         if _settings_flag("notify_customers", default=1):
             notify_customer(pdc)
+
+
+def _send_manager_pdc_notice(pdc_doc, subject, message):
+    managers = get_accounts_managers()
+    if not managers:
+        return
+    frappe.sendmail(recipients=managers, subject=subject, message=message)
+
+
+def _pdc_notice_message(pdc_doc, intro):
+    return f"""
+        <div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
+            <p>{intro}</p>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.name}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.customer}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.cheque_no or 'N/A'}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Reference Date</b></td><td style="padding: 8px; border: 1px solid #ddd;">{frappe.format_date(pdc_doc.reference_date)}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Status</b></td><td style="padding: 8px; border: 1px solid #ddd;">{pdc_doc.pdc_status}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{frappe.format_value(pdc_doc.amount, {'fieldtype': 'Currency'})}</td></tr>
+            </table>
+        </div>
+    """
+
+
+def _mark_pdc_notification_sent(pdc_doc, fieldname, action, details):
+    if not pdc_doc.meta.has_field(fieldname):
+        return
+    pdc_doc.set(fieldname, today())
+    _append_pdc_activity(pdc_doc, action, pdc_doc.pdc_status, pdc_doc.pdc_status, details=details)
+    _save_with_pdc_bypass(pdc_doc)
+
+
+def send_pdc_followup_notifications():
+    settings = get_pdc_settings()
+    today_date = getdate(today())
+
+    reminder_days = int(getattr(settings, "reminder_days_before_maturity", 0) or 0)
+    if reminder_days > 0 and _settings_flag("notify_accounts_managers", default=1):
+        reminder_date = add_days(today_date, reminder_days)
+        for row in frappe.get_all(
+            "PDC",
+            filters={
+                "docstatus": 1,
+                "pdc_status": "Pending",
+                "reference_date": reminder_date,
+            },
+            fields=["name"],
+        ):
+            pdc_doc = frappe.get_doc("PDC", row.name)
+            if pdc_doc.maturity_reminder_sent_on and getdate(pdc_doc.maturity_reminder_sent_on) == today_date:
+                continue
+            _send_manager_pdc_notice(
+                pdc_doc,
+                _("PDC Maturity Reminder: {0}").format(pdc_doc.name),
+                _pdc_notice_message(
+                    pdc_doc,
+                    _("This PDC is due for clearance in {0} day(s).").format(reminder_days),
+                ),
+            )
+            _mark_pdc_notification_sent(
+                pdc_doc,
+                "maturity_reminder_sent_on",
+                "Maturity Reminder Sent",
+                _("Reminder sent {0} day(s) before maturity.").format(reminder_days),
+            )
+
+    if _settings_flag("notify_overdue_pdcs", default=1):
+        grace_days = int(getattr(settings, "overdue_grace_days", 1) or 0)
+        overdue_before = add_days(today_date, -grace_days)
+        for row in frappe.get_all(
+            "PDC",
+            filters={
+                "docstatus": 1,
+                "pdc_status": ["in", ["Pending", "Ready for Clearance", "Approved for Clearance", "Handed Over", "Partially Cleared"]],
+                "reference_date": ["<=", overdue_before],
+            },
+            fields=["name"],
+        ):
+            pdc_doc = frappe.get_doc("PDC", row.name)
+            if pdc_doc.overdue_alert_sent_on and getdate(pdc_doc.overdue_alert_sent_on) == today_date:
+                continue
+            _send_manager_pdc_notice(
+                pdc_doc,
+                _("PDC Overdue for Clearance: {0}").format(pdc_doc.name),
+                _pdc_notice_message(pdc_doc, _("This PDC is overdue for clearance follow-up.")),
+            )
+            _mark_pdc_notification_sent(
+                pdc_doc,
+                "overdue_alert_sent_on",
+                "Overdue Alert Sent",
+                _("Overdue alert sent after {0} grace day(s).").format(grace_days),
+            )
+
+    if _settings_flag("notify_bounced_pdcs", default=1):
+        for row in frappe.get_all(
+            "PDC",
+            filters={
+                "docstatus": 1,
+                "pdc_status": ["in", ["Bounced", "Partially Bounced"]],
+            },
+            fields=["name"],
+        ):
+            pdc_doc = frappe.get_doc("PDC", row.name)
+            if pdc_doc.bounce_alert_sent_on:
+                continue
+            _send_manager_pdc_notice(
+                pdc_doc,
+                _("PDC Bounced: {0}").format(pdc_doc.name),
+                _pdc_notice_message(pdc_doc, _("This PDC is marked as bounced and needs recovery action.")),
+            )
+            _mark_pdc_notification_sent(
+                pdc_doc,
+                "bounce_alert_sent_on",
+                "Bounce Alert Sent",
+                _("Bounce alert sent to PDC managers."),
+            )
+
+    if _settings_flag("notify_replacement_followup", default=1):
+        followup_days = int(getattr(settings, "replacement_followup_days", 3) or 0)
+        followup_before = add_days(today_date, -followup_days)
+        for row in frappe.get_all(
+            "PDC",
+            filters={
+                "docstatus": 1,
+                "pdc_status": ["in", ["Bounced", "Partially Bounced"]],
+                "replacement_pdc": ["is", "not set"],
+                "reference_date": ["<=", followup_before],
+            },
+            fields=["name"],
+        ):
+            pdc_doc = frappe.get_doc("PDC", row.name)
+            if pdc_doc.replacement_followup_sent_on and getdate(pdc_doc.replacement_followup_sent_on) == today_date:
+                continue
+            _send_manager_pdc_notice(
+                pdc_doc,
+                _("PDC Replacement Follow-up: {0}").format(pdc_doc.name),
+                _pdc_notice_message(pdc_doc, _("This bounced PDC still has no replacement linked.")),
+            )
+            _mark_pdc_notification_sent(
+                pdc_doc,
+                "replacement_followup_sent_on",
+                "Replacement Follow-up Sent",
+                _("Replacement follow-up sent after {0} day(s).").format(followup_days),
+            )
 
 
 @frappe.whitelist()

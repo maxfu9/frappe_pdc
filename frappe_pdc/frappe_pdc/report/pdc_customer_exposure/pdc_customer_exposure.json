@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "PDC Customer Exposure",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT customer AS \"Customer:Link/Customer:180\", COUNT(name) AS \"Open PDCs:Int:90\", SUM(amount) AS \"Total PDC Amount:Currency:140\", SUM(IFNULL(cleared_amount, 0)) AS \"Cleared:Currency:120\", SUM(amount - IFNULL(cleared_amount, 0)) AS \"Open Exposure:Currency:140\", MIN(reference_date) AS \"Oldest Cheque Date:Date:130\", MAX(reference_date) AS \"Latest Cheque Date:Date:130\" FROM `tabPDC` WHERE docstatus = 1 AND pdc_status NOT IN ('Cleared', 'Bounced', 'Partially Bounced') GROUP BY customer ORDER BY `Open Exposure:Currency:140` DESC"
+}

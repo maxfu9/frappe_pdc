@@ -1,0 +1,8 @@
+{
+    "doctype": "Report",
+    "name": "PDC Aging Summary",
+    "module": "Frappe PDC",
+    "ref_doctype": "PDC",
+    "report_type": "Query Report",
+    "query": "SELECT customer AS \"Customer:Link/Customer:180\", SUM(CASE WHEN reference_date >= CURDATE() THEN amount - IFNULL(cleared_amount, 0) ELSE 0 END) AS \"Not Due:Currency:120\", SUM(CASE WHEN reference_date < CURDATE() AND DATEDIFF(CURDATE(), reference_date) BETWEEN 0 AND 7 THEN amount - IFNULL(cleared_amount, 0) ELSE 0 END) AS \"0-7 Days:Currency:120\", SUM(CASE WHEN DATEDIFF(CURDATE(), reference_date) BETWEEN 8 AND 30 THEN amount - IFNULL(cleared_amount, 0) ELSE 0 END) AS \"8-30 Days:Currency:120\", SUM(CASE WHEN DATEDIFF(CURDATE(), reference_date) > 30 THEN amount - IFNULL(cleared_amount, 0) ELSE 0 END) AS \"30+ Days:Currency:120\", SUM(amount - IFNULL(cleared_amount, 0)) AS \"Total Open:Currency:130\" FROM `tabPDC` WHERE docstatus = 1 AND pdc_status NOT IN ('Cleared', 'Bounced', 'Partially Bounced') GROUP BY customer ORDER BY `Total Open:Currency:130` DESC"
+}
