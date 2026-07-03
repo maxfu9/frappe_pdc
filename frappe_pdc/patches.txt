@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 frappe_pdc.patches.setup_pdc_settings_and_titles
+frappe_pdc.patches.ensure_pdc_settings_defaults
