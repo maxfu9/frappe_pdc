@@ -301,27 +301,33 @@
   "permissions": [
     {
       "role": "Accounts User",
-      "read": 1
+      "read": 1,
+      "select": 1,
+      "report": 1
     },
     {
       "role": "Accounts Manager",
       "read": 1,
+      "select": 1,
       "write": 1,
       "create": 1,
       "delete": 1,
       "submit": 1,
       "cancel": 1,
-      "amend": 1
+      "amend": 1,
+      "report": 1
     },
     {
       "role": "System Manager",
       "read": 1,
+      "select": 1,
       "write": 1,
       "create": 1,
       "delete": 1,
       "submit": 1,
       "cancel": 1,
-      "amend": 1
+      "amend": 1,
+      "report": 1
     }
   ]
 }
