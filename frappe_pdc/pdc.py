@@ -636,26 +636,43 @@ def _has_clearance_approval(pdc_doc):
     )
 
 
-def _clearance_block_reason(pdc_doc, clearance_date):
+def _clearance_block(pdc_doc, clearance_date, *, settings=None, approved=None, payment_statuses=None):
+    if settings is None:
+        settings = get_pdc_settings()
     if pdc_doc.docstatus != 1 or pdc_doc.pdc_status in PDC_FINAL_STATUSES:
-        return _("Only open, submitted PDCs can be cleared.")
-    if _settings_flag("require_clearance_approval") and not _has_clearance_approval(pdc_doc):
-        return _("This PDC must be approved for clearance before clearing.")
+        return "status", _("Only open, submitted PDCs can be cleared.")
+    if int(settings.get("require_clearance_approval") or 0):
+        if approved is None:
+            approved = _has_clearance_approval(pdc_doc)
+        if not approved:
+            return "approval", _("This PDC must be approved for clearance before clearing.")
     if clearance_date > getdate(today()):
-        return _("Clearance Posting Date cannot be in the future.")
-    if pdc_doc.reference_date and clearance_date < getdate(pdc_doc.reference_date) and not _settings_flag("allow_early_clearance"):
-        return _("This cheque cannot be cleared before its reference date of {0}.").format(
-            formatdate(pdc_doc.reference_date)
-        )
+        return "posting_date", _("Clearance Posting Date cannot be in the future.")
+    if (
+        pdc_doc.reference_date
+        and clearance_date < getdate(pdc_doc.reference_date)
+        and not int(settings.get("allow_early_clearance") or 0)
+    ):
+        message = _("This cheque cannot be cleared before its reference date of {0}.")
+        return "maturity", message.format(formatdate(pdc_doc.reference_date))
     if pdc_doc.handover_date and clearance_date < getdate(pdc_doc.handover_date):
-        return _("Clearance Posting Date cannot be before the supplier handover date.")
+        return "handover_date", _("Clearance Posting Date cannot be before the supplier handover date.")
     if pdc_doc.pdc_receivable_account and not pdc_doc.supplier_payment_entry and not pdc_doc.clearance_bank_account:
-        return _("Set a Clearance Bank Account before clearing through the PDC holding account.")
+        return "bank_account", _("Set a Clearance Bank Account before clearing through the PDC holding account.")
     for payment_entry in (pdc_doc.payment_entry, pdc_doc.supplier_payment_entry):
-        if payment_entry and frappe.db.get_value("Payment Entry", payment_entry, "docstatus") != 0:
-            return _("Linked Payment Entry {0} must be in Draft before clearance.").format(payment_entry)
+        if not payment_entry:
+            continue
+        docstatus = (
+            frappe.db.get_value("Payment Entry", payment_entry, "docstatus")
+            if payment_statuses is None
+            else payment_statuses.get(payment_entry)
+        )
+        if docstatus != 0:
+            return "payment_entry", _("Linked Payment Entry {0} must be in Draft before clearance.").format(
+                payment_entry
+            )
     if not pdc_doc.payment_entry:
-        return _("This PDC needs a linked customer Payment Entry before clearance.")
+        return "payment_entry", _("This PDC needs a linked customer Payment Entry before clearance.")
     return None
 
 
@@ -673,7 +690,8 @@ def get_pdc_actions(pdc_name):
 
     precision = pdc_doc.precision("amount")
     remaining = flt(flt(pdc_doc.amount) - flt(pdc_doc.cleared_amount), precision)
-    clearance_block = _clearance_block_reason(pdc_doc, getdate(today()))
+    block = _clearance_block(pdc_doc, getdate(today()))
+    clearance_block = block[1] if block else None
     if not clearance_block and remaining <= 0:
         clearance_block = _("There is no remaining cheque balance to clear.")
 
@@ -705,9 +723,9 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None, posti
     old_status = pdc_doc.pdc_status
 
     clearance_date = getdate(posting_date or today())
-    block_reason = _clearance_block_reason(pdc_doc, clearance_date)
-    if block_reason:
-        frappe.throw(block_reason)
+    block = _clearance_block(pdc_doc, clearance_date)
+    if block:
+        frappe.throw(block[1])
 
     current_pe_name = pdc_doc.payment_entry
     pe_doc = _get_payment_entry(current_pe_name, "write", for_update=True)

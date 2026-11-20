@@ -127,11 +127,11 @@ class TestPDCWorkflow(IntegrationTestCase):
         invoice.insert()
         return invoice.submit()
 
-    def make_receipt(self, *invoices, is_pdc=True):
+    def make_receipt(self, *invoices, is_pdc=True, reference_date=None):
         first, *remaining = invoices
         entry = get_payment_entry("Sales Invoice", first.name, bank_account=self.bank_account)
         entry.posting_date = self.draft_date
-        entry.reference_date = self.draft_date
+        entry.reference_date = reference_date or self.draft_date
         entry.reference_no = frappe.generate_hash(length=12)
         entry.is_pdc = int(is_pdc)
         for invoice in remaining:
@@ -309,3 +309,84 @@ class TestPDCWorkflow(IntegrationTestCase):
         for voucher in pdc.clearance_vouchers:
             self.assertEqual(frappe.db.get_value(voucher.voucher_type, voucher.voucher_no, "docstatus"), 2)
         self.assertEqual(invoice.reload().outstanding_amount, 100)
+
+    def test_clearance_queue_filters_due_dates_and_shows_why_cheques_are_blocked(self):
+        ready_invoice = self.make_invoice("Sales Invoice", 90)
+        ready = self.register_queue_cheque(ready_invoice, bank=True, approve=True)
+        approve_invoice = self.make_invoice("Sales Invoice", 60)
+        waiting = self.register_queue_cheque(approve_invoice, reference_date=self.clearance_date)
+        blocked = self.register_queue_cheque(self.make_invoice("Sales Invoice", 70), approve=True)
+        future_date = getdate(add_days(today(), 1))
+        future = self.register_queue_cheque(
+            self.make_invoice("Sales Invoice", 80), bank=True, approve=True, reference_date=future_date
+        )
+
+        report = frappe.get_doc("Report", "PDC Clearance Queue")
+        self.assertEqual(report.report_type, "Script Report")
+        columns, rows = report.execute_module({"company": self.company.name})
+        self.assertTrue(any(column["fieldname"] == "remaining" for column in columns))
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(set(by_name), {ready.name, waiting.name, blocked.name})
+        self.assertEqual(by_name[ready.name]["timing"], "Overdue")
+        self.assertEqual(by_name[ready.name]["work_status"], "Ready to Clear")
+        self.assertEqual(by_name[ready.name]["remaining"], 90)
+        self.assertEqual(by_name[ready.name]["currency"], "USD")
+        self.assertEqual(by_name[ready.name]["pending_invoices"], ready_invoice.name)
+        self.assertEqual(by_name[ready.name]["clearance_bank_account"], self.bank_account)
+        self.assertEqual(by_name[waiting.name]["timing"], "Due Today")
+        self.assertEqual(by_name[waiting.name]["work_status"], "Awaiting Approval")
+        self.assertEqual(by_name[blocked.name]["work_status"], "Blocked")
+        self.assertIn("Clearance Bank Account", by_name[blocked.name]["blocking_reason"])
+
+        _, rows = report.execute_module({
+            "company": self.company.name,
+            "due_through": future_date,
+            "timing": "Upcoming",
+            "work_status": "Not Yet Due",
+        })
+        self.assertEqual([row["name"] for row in rows], [future.name])
+
+    def test_clearance_queue_respects_pdc_user_permissions(self):
+        pdc = self.register_queue_cheque(self.make_invoice("Sales Invoice", 20))
+        suffix = frappe.generate_hash(length=8)
+        other_customer = frappe.get_doc({
+            "doctype": "Customer",
+            "customer_name": f"PDC Other Customer {suffix}",
+            "customer_group": "Commercial",
+            "territory": "United States",
+        }).insert()
+        user = frappe.get_doc({
+            "doctype": "User",
+            "email": f"pdc-qa-{suffix}@example.com",
+            "first_name": "PDC QA",
+            "send_welcome_email": 0,
+            "roles": [{"role": "Accounts User"}],
+        }).insert()
+        frappe.get_doc({
+            "doctype": "User Permission",
+            "user": user.name,
+            "allow": "Customer",
+            "for_value": other_customer.name,
+            "apply_to_all_doctypes": 1,
+        }).insert()
+
+        report = frappe.get_doc("Report", "PDC Clearance Queue")
+        _, admin_rows = report.execute_module({"company": self.company.name})
+        self.assertIn(pdc.name, {row["name"] for row in admin_rows})
+        original_user = frappe.session.user
+        try:
+            frappe.set_user(user.name)
+            _, user_rows = report.execute_module({"company": self.company.name})
+        finally:
+            frappe.set_user(original_user)
+        self.assertEqual(user_rows, [])
+
+    def register_queue_cheque(self, invoice, *, bank=False, approve=False, reference_date=None):
+        entry = self.make_receipt(invoice, reference_date=reference_date)
+        pdc = frappe.get_doc("PDC", register_pdc(entry.name))
+        if bank:
+            pdc.clearance_bank_account = self.bank_account
+            pdc.save()
+        if approve:
+            approve_pdc_clearance(pdc_name=pdc.name)
+        return pdc
