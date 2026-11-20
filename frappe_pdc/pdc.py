@@ -1,3 +1,5 @@
+from math import isfinite
+
 import frappe
 from frappe.utils import add_days, escape_html, flt, getdate, now_datetime, today
 from frappe import _
@@ -195,16 +197,17 @@ def validate_pdc_status_transition(old_status, new_status):
         )
 
 
-def _require_pdc_manager(action):
-    if frappe.session.user == "Administrator":
-        return
+def _has_pdc_manager_role():
+    return frappe.session.user == "Administrator" or bool(
+        set(get_pdc_manager_roles()).intersection(frappe.get_roles(frappe.session.user))
+    )
 
-    allowed_roles = set(get_pdc_manager_roles())
-    user_roles = set(frappe.get_roles(frappe.session.user))
-    if not allowed_roles.intersection(user_roles):
+
+def _require_pdc_manager(action):
+    if not _has_pdc_manager_role():
         frappe.throw(
             _("Only users with one of these roles can {0}: {1}").format(
-                action, ", ".join(sorted(allowed_roles))
+                action, ", ".join(sorted(get_pdc_manager_roles()))
             ),
             frappe.PermissionError,
         )
@@ -220,8 +223,8 @@ def _require_doc_permission(doc, permtype="read"):
         )
 
 
-def _get_payment_entry(payment_entry_name, permtype="read"):
-    doc = frappe.get_doc("Payment Entry", payment_entry_name)
+def _get_payment_entry(payment_entry_name, permtype="read", for_update=False):
+    doc = frappe.get_doc("Payment Entry", payment_entry_name, for_update=for_update)
     _require_doc_permission(doc, permtype)
     return doc
 
@@ -360,22 +363,16 @@ def cancel_pdc_clearance_vouchers(pdc_doc):
 # Payment Entry Hook
 # -----------------------------
 def handle_before_submit(doc, method=None):
-    """
-    Called before submitting a Payment Entry.
-    Prevents standard submission if 'Is PDC' is checked but no PDC record is linked.
-    Allows submission for 'spin-off' PEs created during partial clearance.
-    """
-    if doc.is_pdc:
-        # Check for bypass flag (used during partial clearance spin-off)
-        if getattr(doc.flags, "ignore_pdc_check", False):
-            return
+    """Only PDC clearance may submit the drafts used to settle a cheque."""
+    if doc.flags.ignore_pdc_check:
+        return
 
-        # Check if a PDC record exists and is linked
-        pdc_exists = frappe.db.exists("PDC", {"payment_entry": doc.name})
-        
-        # If no PDC exists, it means they are bypassing the 'Register PDC' workflow
-        if not pdc_exists:
-            frappe.throw(_("This is a PDC. Please click 'Register PDC' in Draft mode before submitting."))
+    for link_field in ("payment_entry", "supplier_payment_entry"):
+        if frappe.db.exists("PDC", {link_field: doc.name}):
+            frappe.throw(_("This Payment Entry is linked to a PDC. Open the PDC record to clear it."))
+
+    if doc.is_pdc:
+        frappe.throw(_("Register this cheque as a PDC, then clear it from the PDC record."))
 
 
 def handle_payment_entry_update(doc, method=None):
@@ -390,68 +387,90 @@ def handle_payment_entry_update(doc, method=None):
     if getattr(doc.flags, "skip_pdc_sync", False):
         return
 
-    pdc_name = frappe.db.get_value("PDC", {"payment_entry": doc.name}, "name")
+    pdc_name = frappe.db.get_value("PDC", {"payment_entry": doc.name, "docstatus": ["<", 2]}, "name")
     table_field = "references_table"
     is_customer_side = True
 
     if not pdc_name:
-        pdc_name = frappe.db.get_value("PDC", {"supplier_payment_entry": doc.name}, "name")
+        pdc_name = frappe.db.get_value(
+            "PDC", {"supplier_payment_entry": doc.name, "docstatus": ["<", 2]}, "name"
+        )
         table_field = "purchase_references"
         is_customer_side = False
 
     if not pdc_name:
         return
 
-    pdc_doc = frappe.get_doc("PDC", pdc_name)
-    if pdc_doc.docstatus == 2:
+    pdc_doc = frappe.get_doc("PDC", pdc_name, for_update=True)
+    if pdc_doc.docstatus == 2 or pdc_doc.pdc_status in PDC_FINAL_STATUSES:
         return
 
-    existing_rows = {
-        (row.reference_doctype, row.reference_name): row
-        for row in (pdc_doc.get(table_field) or [])
-    }
+    previous = doc.get_doc_before_save()
+    if previous and any(
+        previous.get_value(fieldname) != doc.get_value(fieldname)
+        for fieldname in ("company", "party_type", "party", "payment_type", "reference_no", "reference_date", "is_pdc")
+    ):
+        frappe.throw(_("The company, party, payment type, and cheque details of a registered PDC cannot be changed on its Payment Entry."))
 
-    pdc_doc.set(table_field, [])
-    references_payload = []
+    precision = pdc_doc.precision("amount")
+    remaining = flt(flt(pdc_doc.amount) - flt(pdc_doc.cleared_amount), precision)
+    allocated = flt(sum(flt(ref.allocated_amount) for ref in doc.references), precision)
+    if flt(doc.paid_amount, precision) != remaining:
+        frappe.throw(_("The Payment Entry amount must match the pending cheque balance of {0}.").format(remaining))
+    if (is_customer_side and allocated != remaining) or allocated > remaining:
+        frappe.throw(_("Invoice allocations must match the pending cheque balance of {0} for a customer receipt and cannot exceed it for a supplier payment.").format(remaining))
 
+    _sync_draft_references(pdc_doc, doc, table_field, precision)
+
+
+def _sync_draft_references(pdc_doc, doc, table_field, precision):
+    # The draft contains only pending allocations. Preserve each posted portion,
+    # including invoices removed from the draft because they are already cleared.
+    cleared_rows = {}
+    for row in pdc_doc.get(table_field) or []:
+        cleared = flt(row.cleared_amount, precision)
+        if not cleared:
+            continue
+        key = (row.reference_doctype, row.reference_name)
+        if key in cleared_rows:
+            cleared_rows[key].cleared_amount += cleared
+        else:
+            cleared_rows[key] = frappe._dict(
+                reference_doctype=row.reference_doctype,
+                reference_name=row.reference_name,
+                total_amount=row.total_amount,
+                outstanding_amount=row.outstanding_amount,
+                party_type=row.party_type,
+                party=row.party,
+                cleared_amount=cleared,
+            )
+
+    references = []
     for ref in doc.references:
         key = (ref.reference_doctype, ref.reference_name)
-        prev = existing_rows.get(key)
-        prev_cleared = flt(prev.cleared_amount) if prev else 0
-        alloc = flt(ref.allocated_amount)
-        cleared = min(prev_cleared, alloc) if alloc > 0 else 0
-        status = "Cleared" if alloc > 0 and abs(cleared - alloc) < 0.01 else ("Partially Cleared" if cleared > 0 else "Pending")
-
-        row = {
+        posted = cleared_rows.pop(key, None)
+        cleared = flt(posted.cleared_amount, precision) if posted else 0
+        references.append({
             "reference_doctype": ref.reference_doctype,
             "reference_name": ref.reference_name,
             "total_amount": ref.total_amount,
             "outstanding_amount": ref.outstanding_amount,
-            "allocated_amount": ref.allocated_amount,
+            "allocated_amount": flt(flt(ref.allocated_amount) + cleared, precision),
             "party_type": doc.party_type,
             "party": doc.party,
             "cleared_amount": cleared,
-            "status": status,
-        }
-        pdc_doc.append(table_field, row)
+            "status": "Partially Cleared" if cleared else "Pending",
+        })
 
-        if is_customer_side:
-            references_payload.append(
-                {
-                    "reference_doctype": ref.reference_doctype,
-                    "reference_name": ref.reference_name,
-                    "total_amount": ref.total_amount,
-                    "outstanding_amount": ref.outstanding_amount,
-                    "allocated_amount": ref.allocated_amount,
-                    "party_type": doc.party_type,
-                    "party": doc.party,
-                }
-            )
+    for row in cleared_rows.values():
+        row.allocated_amount = flt(row.cleared_amount, precision)
+        row.cleared_amount = row.allocated_amount
+        row.status = "Cleared"
+        references.append(row)
 
-    if is_customer_side:
-        pdc_doc.amount = doc.paid_amount
-        pdc_doc.references = frappe.as_json(references_payload)
-
+    pdc_doc.set(table_field, references)
+    if table_field == "references_table" and pdc_doc.meta.has_field("references"):
+        pdc_doc.references = frappe.as_json(references)
     _save_with_pdc_bypass(pdc_doc)
 
 
@@ -462,15 +481,24 @@ def register_pdc(payment_entry_name):
     Does not submit the Payment Entry, so zero GL entry.
     """
     _require_pdc_manager(_("register PDCs"))
-    doc = _get_payment_entry(payment_entry_name, "write")
+    doc = _get_payment_entry(payment_entry_name, "write", for_update=True)
     if not doc.is_pdc:
         frappe.throw(_("This Payment Entry is not marked as PDC"))
 
-    if doc.party_type != "Customer":
+    if doc.party_type != "Customer" or doc.payment_type != "Receive":
         frappe.throw(_("PDC registration is only supported for Customer receipts."))
     
     if doc.docstatus != 0:
         frappe.throw(_("PDC can only be registered for Draft Payment Entries"))
+
+    existing = frappe.db.get_value(
+        "PDC", {"payment_entry": doc.name, "docstatus": ["<", 2]}, ["name", "docstatus"], as_dict=True
+    )
+    pdc_doc = frappe.get_doc("PDC", existing.name) if existing else frappe.new_doc("PDC")
+    if existing:
+        _require_doc_permission(pdc_doc, "write")
+        if existing.docstatus == 1:
+            return pdc_doc.name
 
     if not doc.reference_no or not doc.reference_date:
         frappe.throw(_("Cheque/Reference No and Cheque/Reference Date are required to register PDC."))
@@ -506,11 +534,6 @@ def register_pdc(payment_entry_name):
     if abs(flt(doc.paid_amount) - total_allocated) > 0.01:
         frappe.throw(_("Paid Amount ({0}) must match Total Allocated ({1}) before registering PDC").format(doc.paid_amount, total_allocated))
 
-    existing = frappe.get_list("PDC", filters={"payment_entry": doc.name}, fields=["name"])
-    pdc_doc = frappe.get_doc("PDC", existing[0].name) if existing else frappe.new_doc("PDC")
-    if existing:
-        _require_doc_permission(pdc_doc, "write")
-
     # Map fields
     old_status = pdc_doc.pdc_status
     pdc_doc.payment_entry = doc.name
@@ -527,6 +550,7 @@ def register_pdc(payment_entry_name):
         pdc_doc.pdc_receivable_account = pdc_receivable_account
         if pdc_receivable_account:
             _apply_pdc_receivable_account(doc, pdc_receivable_account)
+            doc.flags.skip_pdc_sync = True
             _save_with_pdc_bypass(doc)
     
     # Store references in JSON and Table
@@ -606,9 +630,70 @@ def get_pdc_name(payment_entry):
     return pdc
 
 
-# -----------------------------
+def _has_clearance_approval(pdc_doc):
+    return pdc_doc.pdc_status == "Approved for Clearance" or any(
+        row.action == "Approved for Clearance" for row in (pdc_doc.get("status_history") or [])
+    )
+
+
+def _clearance_block_reason(pdc_doc, clearance_date):
+    if pdc_doc.docstatus != 1 or pdc_doc.pdc_status in PDC_FINAL_STATUSES:
+        return _("Only open, submitted PDCs can be cleared.")
+    if _settings_flag("require_clearance_approval") and not _has_clearance_approval(pdc_doc):
+        return _("This PDC must be approved for clearance before clearing.")
+    if clearance_date > getdate(today()):
+        return _("Clearance Posting Date cannot be in the future.")
+    if pdc_doc.reference_date and clearance_date < getdate(pdc_doc.reference_date) and not _settings_flag("allow_early_clearance"):
+        return _("This cheque cannot be cleared before its reference date of {0}.").format(
+            frappe.format_date(pdc_doc.reference_date)
+        )
+    if pdc_doc.handover_date and clearance_date < getdate(pdc_doc.handover_date):
+        return _("Clearance Posting Date cannot be before the supplier handover date.")
+    if pdc_doc.pdc_receivable_account and not pdc_doc.supplier_payment_entry and not pdc_doc.clearance_bank_account:
+        return _("Set a Clearance Bank Account before clearing through the PDC holding account.")
+    for payment_entry in (pdc_doc.payment_entry, pdc_doc.supplier_payment_entry):
+        if payment_entry and frappe.db.get_value("Payment Entry", payment_entry, "docstatus") != 0:
+            return _("Linked Payment Entry {0} must be in Draft before clearance.").format(payment_entry)
+    if not pdc_doc.payment_entry:
+        return _("This PDC needs a linked customer Payment Entry before clearance.")
+    return None
+
+
 @frappe.whitelist()
-def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
+def get_pdc_actions(pdc_name):
+    pdc_doc = frappe.get_doc("PDC", pdc_name)
+    _require_doc_permission(pdc_doc)
+    if (
+        pdc_doc.docstatus != 1
+        or pdc_doc.pdc_status in PDC_FINAL_STATUSES
+        or not _has_pdc_manager_role()
+        or not frappe.has_permission("PDC", ptype="write", doc=pdc_doc)
+    ):
+        return {}
+
+    precision = pdc_doc.precision("amount")
+    remaining = flt(flt(pdc_doc.amount) - flt(pdc_doc.cleared_amount), precision)
+    clearance_block = _clearance_block_reason(pdc_doc, getdate(today()))
+    if not clearance_block and remaining <= 0:
+        clearance_block = _("There is no remaining cheque balance to clear.")
+
+    return {
+        "approve": not _has_clearance_approval(pdc_doc),
+        "clear": not clearance_block,
+        "clearance_block": clearance_block,
+        "handover": bool(
+            pdc_doc.payment_entry
+            and not pdc_doc.supplier_payment_entry
+            and "Handed Over" in PDC_ALLOWED_TRANSITIONS.get(pdc_doc.pdc_status, set())
+        ),
+        "bounce": bool(pdc_doc.payment_entry),
+        "remaining": remaining,
+        "precision": precision,
+    }
+
+
+@frappe.whitelist()
+def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None, posting_date=None):
     """
     Marks both Payment Entry and PDC as Cleared (or Partially Cleared) and reconciles invoices.
     Optimized for single-save transaction integrity.
@@ -619,89 +704,95 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
     _require_doc_permission(pdc_doc, "write")
     old_status = pdc_doc.pdc_status
 
-    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
-        frappe.throw(_("This PDC is already finalized and cannot be cleared."))
-    if _settings_flag("require_clearance_approval") and pdc_doc.pdc_status != "Approved for Clearance":
-        frappe.throw(_("This PDC must be approved for clearance before clearing."))
-    if (
-        pdc_doc.reference_date
-        and str(pdc_doc.reference_date) > today()
-        and not _settings_flag("allow_early_clearance")
-    ):
-        frappe.throw(
-            _("PDC {0} is dated {1}. Enable Allow Early Clearance in PDC Settings to clear it before maturity.").format(
-                pdc_doc.name, frappe.format_date(pdc_doc.reference_date)
-            )
-        )
-    
+    clearance_date = getdate(posting_date or today())
+    block_reason = _clearance_block_reason(pdc_doc, clearance_date)
+    if block_reason:
+        frappe.throw(block_reason)
+
     current_pe_name = pdc_doc.payment_entry
-    pe_doc = _get_payment_entry(current_pe_name, "write")
+    pe_doc = _get_payment_entry(current_pe_name, "write", for_update=True)
     pe_doc.flags.skip_pdc_sync = True
     
     if pe_doc.docstatus != 0:
         frappe.throw(_("The linked Payment Entry {0} is already submitted. Please refresh the PDC record.").format(current_pe_name))
     
-    total_pdc_amount = flt(pdc_doc.amount)
-    previously_cleared = flt(pdc_doc.cleared_amount)
-    remaining_to_clear = flt(total_pdc_amount - previously_cleared, 2)
+    supp_pe = None
+    if pdc_doc.supplier_payment_entry:
+        supp_pe = _get_payment_entry(pdc_doc.supplier_payment_entry, "write", for_update=True)
+        if supp_pe.docstatus != 0:
+            frappe.throw(_("The linked supplier Payment Entry {0} must be in Draft before clearing.").format(supp_pe.name))
+        supp_pe.flags.skip_pdc_sync = True
+
+    precision = pdc_doc.precision("amount")
+    total_pdc_amount = flt(pdc_doc.amount, precision)
+    previously_cleared = flt(pdc_doc.cleared_amount, precision)
+    remaining_to_clear = flt(total_pdc_amount - previously_cleared, precision)
     
     if clear_amount is None:
         clear_amount = remaining_to_clear
     else:
         clear_amount = flt(clear_amount)
+        if not isfinite(clear_amount):
+            frappe.throw(_("Enter a valid clearance amount."))
+        clear_amount = flt(clear_amount, precision)
 
     if clear_amount <= 0:
         frappe.throw(_("Clearance amount must be greater than zero."))
-    if clear_amount > remaining_to_clear + 0.01:
+    if clear_amount > remaining_to_clear:
         frappe.throw(_("Clearance amount ({0}) exceeds remaining PDC amount ({1})").format(clear_amount, remaining_to_clear))
     if mode_of_payment and not frappe.db.exists("Mode of Payment", mode_of_payment):
         frappe.throw(_("Mode of Payment {0} does not exist.").format(mode_of_payment))
     pdc_receivable_account = getattr(pdc_doc, "pdc_receivable_account", None)
-    has_supplier_flow = bool(pdc_doc.supplier_payment_entry)
-    if pdc_receivable_account and not has_supplier_flow and not getattr(pdc_doc, "clearance_bank_account", None):
-        frappe.throw(_("Clearance Bank Account is required when clearing a PDC through the holding account."))
+    has_supplier_flow = supp_pe is not None
+    customer_balance = flt(
+        sum(flt(row.allocated_amount) - flt(row.cleared_amount) for row in pdc_doc.references_table),
+        precision,
+    )
+    if customer_balance != remaining_to_clear:
+        frappe.throw(_("Pending customer invoice allocations must match the remaining PDC amount before clearance."))
 
     # 2. IN-MEMORY UPDATES & DELTA TRACKING (No Saves yet)
     to_distribute = clear_amount
     customer_deltas = {} # To track what we cleared in THIS call
     for row in pdc_doc.references_table:
         if to_distribute <= 0: break
-        rem = flt(row.allocated_amount) - flt(row.cleared_amount)
+        rem = flt(flt(row.allocated_amount) - flt(row.cleared_amount), precision)
         if rem > 0:
             alloc = min(to_distribute, rem)
-            row.cleared_amount += alloc
-            row.status = "Cleared" if abs(row.cleared_amount - row.allocated_amount) < 0.01 else "Partially Cleared"
+            row.cleared_amount = flt(flt(row.cleared_amount) + alloc, precision)
+            row.status = "Cleared" if row.cleared_amount == flt(row.allocated_amount, precision) else "Partially Cleared"
             customer_deltas[row.name] = alloc
-            to_distribute -= alloc
+            to_distribute = flt(to_distribute - alloc, precision)
 
     supplier_deltas = {}
     if pdc_doc.supplier_payment_entry and pdc_doc.purchase_references:
         to_distribute_supp = clear_amount
         for row in pdc_doc.purchase_references:
             if to_distribute_supp <= 0: break
-            rem = flt(row.allocated_amount) - flt(row.cleared_amount)
+            rem = flt(flt(row.allocated_amount) - flt(row.cleared_amount), precision)
             if rem > 0:
                 alloc = min(to_distribute_supp, rem)
-                row.cleared_amount += alloc
-                row.status = "Cleared" if abs(row.cleared_amount - row.allocated_amount) < 0.01 else "Partially Cleared"
+                row.cleared_amount = flt(flt(row.cleared_amount) + alloc, precision)
+                row.status = "Cleared" if row.cleared_amount == flt(row.allocated_amount, precision) else "Partially Cleared"
                 supplier_deltas[row.name] = alloc
-                to_distribute_supp -= alloc
+                to_distribute_supp = flt(to_distribute_supp - alloc, precision)
 
-    new_total_cleared = previously_cleared + clear_amount
-    new_status = "Cleared" if abs(new_total_cleared - total_pdc_amount) < 0.01 else "Partially Cleared"
+    new_total_cleared = flt(previously_cleared + clear_amount, precision)
+    remaining_balance = flt(total_pdc_amount - new_total_cleared, precision)
+    new_status = "Partially Cleared" if remaining_balance else "Cleared"
     validate_pdc_status_transition(old_status, new_status)
-    remaining_balance = total_pdc_amount - new_total_cleared
     clearance_journal = None
     primary_reference_doctype = None
     primary_reference_name = None
 
     # 3. SETTLE PAYMENT ENTRIES
     # --- CUSTOMER SIDE (Master: pe_doc) ---
-    if abs(remaining_balance) > 0.01:
+    if remaining_balance:
         # A. Create the SPIN-OFF PE for the CLEARED portion
         cleared_pe = frappe.copy_doc(pe_doc)
         cleared_pe.docstatus = 0
         cleared_pe.name = None
+        cleared_pe.posting_date = clearance_date
         cleared_pe.paid_amount = clear_amount
         cleared_pe.received_amount = clear_amount
         cleared_pe.set("references", [])
@@ -738,7 +829,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         primary_reference_doctype = "Payment Entry"
         primary_reference_name = cleared_pe.name
         if pdc_receivable_account and not has_supplier_flow:
-            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
+            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount, clearance_date)
             _append_clearance_voucher(
                 pdc_doc,
                 "Journal Entry",
@@ -754,7 +845,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         pe_doc.received_amount = remaining_balance
         pe_doc.set("references", [])
         for row in pdc_doc.references_table:
-            rem_on_row = flt(row.allocated_amount) - flt(row.cleared_amount)
+            rem_on_row = flt(flt(row.allocated_amount) - flt(row.cleared_amount), precision)
             if rem_on_row > 0:
                 pe_doc.append("references", {
                     "reference_doctype": row.reference_doctype,
@@ -767,6 +858,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         pdc_doc.payment_entry = pe_doc.name
     else:
         # FULL CLEARANCE
+        pe_doc.posting_date = clearance_date
         pe_doc.paid_amount = remaining_to_clear 
         pe_doc.received_amount = remaining_to_clear
         pe_doc.set("references", [])
@@ -787,6 +879,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         else:
             _apply_receive_clearance_account(pe_doc, getattr(pdc_doc, "clearance_bank_account", None))
         _save_with_pdc_bypass(pe_doc)
+        pe_doc.flags.ignore_pdc_check = True
         pe_doc.submit()
         _append_clearance_voucher(
             pdc_doc,
@@ -800,7 +893,7 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
         primary_reference_doctype = "Payment Entry"
         primary_reference_name = pe_doc.name
         if pdc_receivable_account and not has_supplier_flow:
-            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount)
+            clearance_journal = _submit_holding_to_bank_journal(pdc_doc, clear_amount, clearance_date)
             _append_clearance_voucher(
                 pdc_doc,
                 "Journal Entry",
@@ -812,89 +905,89 @@ def clear_pdc(payment_entry_name, clear_amount=None, mode_of_payment=None):
             primary_reference_name = clearance_journal.name
 
     # --- SUPPLIER SIDE (if handed over) ---
-    if pdc_doc.supplier_payment_entry:
-        supp_pe = _get_payment_entry(pdc_doc.supplier_payment_entry, "write")
-        supp_pe.flags.skip_pdc_sync = True
-        if supp_pe.docstatus == 0:
-            if abs(remaining_balance) > 0.01:
-                # SPIN-OFF Supplier PE
-                cleared_supp_pe = frappe.copy_doc(supp_pe)
-                cleared_supp_pe.docstatus = 0
-                cleared_supp_pe.name = None
-                cleared_supp_pe.paid_amount = clear_amount
-                cleared_supp_pe.received_amount = clear_amount
-                cleared_supp_pe.set("references", [])
-                
-                for row in pdc_doc.purchase_references:
-                    delta = supplier_deltas.get(row.name, 0)
-                    if delta > 0:
-                        cleared_supp_pe.append("references", {
-                            "reference_doctype": row.reference_doctype,
-                            "reference_name": row.reference_name,
-                            "allocated_amount": delta,
-                            "total_amount": row.total_amount,
-                            "outstanding_amount": row.outstanding_amount
-                        })
-                cleared_supp_pe.flags.ignore_pdc_check = True
-                cleared_supp_pe.flags.skip_pdc_sync = True
-                if mode_of_payment:
-                    cleared_supp_pe.mode_of_payment = mode_of_payment
-                _insert_with_pdc_bypass(cleared_supp_pe)
-                cleared_supp_pe.submit()
-                _append_clearance_voucher(
-                    pdc_doc,
-                    "Payment Entry",
-                    cleared_supp_pe.name,
-                    clear_amount,
-                    cleared_supp_pe.party_type,
-                    cleared_supp_pe.party,
-                    _("Supplier handover clearance"),
-                )
-                
-                # Adjust Master Supplier Draft
-                supp_pe.paid_amount = remaining_balance
-                supp_pe.received_amount = remaining_balance
-                supp_pe.set("references", [])
-                for row in pdc_doc.purchase_references:
-                    rem_on_row = flt(row.allocated_amount) - flt(row.cleared_amount)
-                    if rem_on_row > 0:
-                        supp_pe.append("references", {
-                            "reference_doctype": row.reference_doctype,
-                            "reference_name": row.reference_name,
-                            "allocated_amount": rem_on_row,
-                            "total_amount": row.total_amount,
-                            "outstanding_amount": row.outstanding_amount
-                        })
-                _save_with_pdc_bypass(supp_pe)
-                pdc_doc.supplier_payment_entry = supp_pe.name
-            else:
-                # FULL CLEARANCE Supplier
-                supp_pe.paid_amount = remaining_to_clear
-                supp_pe.received_amount = remaining_to_clear
-                supp_pe.set("references", [])
-                for row in pdc_doc.purchase_references:
-                    delta = supplier_deltas.get(row.name, 0)
-                    if delta > 0:
-                        supp_pe.append("references", {
-                            "reference_doctype": row.reference_doctype,
-                            "reference_name": row.reference_name,
-                            "allocated_amount": delta,
-                            "total_amount": row.total_amount,
-                            "outstanding_amount": row.outstanding_amount
-                        })
-                if mode_of_payment:
-                    supp_pe.mode_of_payment = mode_of_payment
-                _save_with_pdc_bypass(supp_pe)
-                supp_pe.submit()
-                _append_clearance_voucher(
-                    pdc_doc,
-                    "Payment Entry",
-                    supp_pe.name,
-                    clear_amount,
-                    supp_pe.party_type,
-                    supp_pe.party,
-                    _("Supplier handover clearance"),
-                )
+    if supp_pe:
+        if remaining_balance:
+            # SPIN-OFF Supplier PE
+            cleared_supp_pe = frappe.copy_doc(supp_pe)
+            cleared_supp_pe.docstatus = 0
+            cleared_supp_pe.name = None
+            cleared_supp_pe.posting_date = clearance_date
+            cleared_supp_pe.paid_amount = clear_amount
+            cleared_supp_pe.received_amount = clear_amount
+            cleared_supp_pe.set("references", [])
+
+            for row in pdc_doc.purchase_references:
+                delta = supplier_deltas.get(row.name, 0)
+                if delta > 0:
+                    cleared_supp_pe.append("references", {
+                        "reference_doctype": row.reference_doctype,
+                        "reference_name": row.reference_name,
+                        "allocated_amount": delta,
+                        "total_amount": row.total_amount,
+                        "outstanding_amount": row.outstanding_amount
+                    })
+            cleared_supp_pe.flags.ignore_pdc_check = True
+            cleared_supp_pe.flags.skip_pdc_sync = True
+            if mode_of_payment:
+                cleared_supp_pe.mode_of_payment = mode_of_payment
+            _insert_with_pdc_bypass(cleared_supp_pe)
+            cleared_supp_pe.submit()
+            _append_clearance_voucher(
+                pdc_doc,
+                "Payment Entry",
+                cleared_supp_pe.name,
+                clear_amount,
+                cleared_supp_pe.party_type,
+                cleared_supp_pe.party,
+                _("Supplier handover clearance"),
+            )
+
+            # Adjust Master Supplier Draft
+            supp_pe.paid_amount = remaining_balance
+            supp_pe.received_amount = remaining_balance
+            supp_pe.set("references", [])
+            for row in pdc_doc.purchase_references:
+                rem_on_row = flt(flt(row.allocated_amount) - flt(row.cleared_amount), precision)
+                if rem_on_row > 0:
+                    supp_pe.append("references", {
+                        "reference_doctype": row.reference_doctype,
+                        "reference_name": row.reference_name,
+                        "allocated_amount": rem_on_row,
+                        "total_amount": row.total_amount,
+                        "outstanding_amount": row.outstanding_amount
+                    })
+            _save_with_pdc_bypass(supp_pe)
+            pdc_doc.supplier_payment_entry = supp_pe.name
+        else:
+            # FULL CLEARANCE Supplier
+            supp_pe.posting_date = clearance_date
+            supp_pe.paid_amount = remaining_to_clear
+            supp_pe.received_amount = remaining_to_clear
+            supp_pe.set("references", [])
+            for row in pdc_doc.purchase_references:
+                delta = supplier_deltas.get(row.name, 0)
+                if delta > 0:
+                    supp_pe.append("references", {
+                        "reference_doctype": row.reference_doctype,
+                        "reference_name": row.reference_name,
+                        "allocated_amount": delta,
+                        "total_amount": row.total_amount,
+                        "outstanding_amount": row.outstanding_amount
+                    })
+            if mode_of_payment:
+                supp_pe.mode_of_payment = mode_of_payment
+            _save_with_pdc_bypass(supp_pe)
+            supp_pe.flags.ignore_pdc_check = True
+            supp_pe.submit()
+            _append_clearance_voucher(
+                pdc_doc,
+                "Payment Entry",
+                supp_pe.name,
+                clear_amount,
+                supp_pe.party_type,
+                supp_pe.party,
+                _("Supplier handover clearance"),
+            )
 
     # 4. FINAL SAVE
     pdc_doc.cleared_amount = new_total_cleared
@@ -978,13 +1071,18 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     _require_pdc_manager(_("handover PDCs"))
     pdc_doc = _get_pdc_by_payment_entry(payment_entry_name, lock=True)
     _require_doc_permission(pdc_doc, "write")
-    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
-        frappe.throw(_("Finalized PDCs cannot be handed over."))
+    if pdc_doc.docstatus != 1 or pdc_doc.pdc_status in PDC_FINAL_STATUSES:
+        frappe.throw(_("Only open, submitted PDCs can be handed over."))
+    if pdc_doc.supplier_payment_entry or pdc_doc.pdc_status == "Handed Over":
+        frappe.throw(_("This PDC has already been handed over."))
     validate_pdc_status_transition(pdc_doc.pdc_status, "Handed Over")
     if not frappe.db.exists("Supplier", supplier):
         frappe.throw(_("Supplier {0} does not exist.").format(supplier))
     if not handover_date:
         frappe.throw(_("Handover Date is required."))
+    orig_pe = _get_payment_entry(payment_entry_name, "write", for_update=True)
+    if orig_pe.docstatus != 0:
+        frappe.throw(_("The linked customer Payment Entry must be in Draft before handover."))
 
     old_status = pdc_doc.pdc_status
     pdc_name = pdc_doc.name
@@ -1018,7 +1116,6 @@ def handover_pdc(payment_entry_name, supplier, handover_date):
     # 1. Received from Customer: Dr PDC/Bank Account, Cr Customer.
     # 2. Endorsed to Supplier: Dr Supplier, Cr PDC/Bank Account.
     
-    orig_pe = _get_payment_entry(payment_entry_name, "write")
     supp_pe.mode_of_payment = orig_pe.mode_of_payment
     paid_from_account = getattr(pdc_doc, "pdc_receivable_account", None) or orig_pe.paid_to
     if not paid_from_account:
@@ -1378,23 +1475,23 @@ def approve_pdc_clearance(pdc_name=None, payment_entry_name=None):
     else:
         frappe.throw(_("PDC or Payment Entry is required."))
 
-    if pdc_doc.pdc_status in PDC_FINAL_STATUSES:
-        frappe.throw(_("Finalized PDCs cannot be approved for clearance."))
-    if pdc_doc.pdc_status not in {"Ready for Clearance", "Pending"}:
-        frappe.throw(_("Only Pending or Ready for Clearance PDCs can be approved."))
+    if pdc_doc.docstatus != 1 or pdc_doc.pdc_status in PDC_FINAL_STATUSES:
+        frappe.throw(_("Only open, submitted PDCs can be approved for clearance."))
+    if _has_clearance_approval(pdc_doc):
+        return pdc_doc.name
 
     old_status = pdc_doc.pdc_status
-    validate_pdc_status_transition(old_status, "Approved for Clearance")
-    pdc_doc.pdc_status = "Approved for Clearance"
+    if old_status in {"Pending", "Ready for Clearance"}:
+        pdc_doc.pdc_status = "Approved for Clearance"
     _append_pdc_activity(
         pdc_doc,
         "Approved for Clearance",
         old_status=old_status,
-        new_status="Approved for Clearance",
+        new_status=pdc_doc.pdc_status,
     )
     _save_with_pdc_bypass(pdc_doc)
     if pdc_doc.payment_entry:
-        frappe.db.set_value("Payment Entry", pdc_doc.payment_entry, "pdc_status", "Approved for Clearance")
+        frappe.db.set_value("Payment Entry", pdc_doc.payment_entry, "pdc_status", pdc_doc.pdc_status)
     return pdc_doc.name
 
 

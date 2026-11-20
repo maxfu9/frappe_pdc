@@ -2,7 +2,7 @@ if (!frappe._frappe_pdc_form_script_registered) {
 frappe._frappe_pdc_form_script_registered = true;
 
 frappe.ui.form.on('PDC', {
-    refresh: function (frm) {
+    refresh: async function (frm) {
         const status_colors = {
             'Pending': 'orange',
             'Ready for Clearance': 'yellow',
@@ -39,8 +39,12 @@ frappe.ui.form.on('PDC', {
         if (frm.doc.docstatus === 1) {
             if (!['Cleared', 'Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status)) {
 
-                // Action Buttons
-                if (['Pending', 'Ready for Clearance'].includes(frm.doc.pdc_status)) {
+                const actions = await frappe.xcall('frappe_pdc.pdc.get_pdc_actions', { pdc_name: frm.doc.name });
+                if (actions.clearance_block) {
+                    frm.set_intro(frappe.utils.escape_html(actions.clearance_block), 'orange');
+                }
+
+                if (actions.approve) {
                     frm.add_custom_button(__('Approve Clearance'), function () {
                         frappe.call({
                             method: 'frappe_pdc.pdc.approve_pdc_clearance',
@@ -55,89 +59,72 @@ frappe.ui.form.on('PDC', {
                     }, __('Actions'));
                 }
 
-                frm.add_custom_button(__('Clear Cheque'), function () {
-                    let total_amt = flt(frm.doc.amount);
-                    let cleared_amt = flt(frm.doc.cleared_amount);
-                    let max_amt = Math.round((total_amt - cleared_amt) * 100) / 100;
-
-                    if (max_amt <= 0) {
-                        frappe.msgprint(__('This cheque is already fully cleared according to the amounts.'));
-                        return;
-                    }
-
-                    frappe.prompt([
-                        { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', default: max_amt, reqd: 1 },
-                        { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Link', options: 'Mode of Payment', reqd: 1 }
-                    ], (values) => {
-                        let entered_amt = flt(values.amt);
-                        if (entered_amt <= 0) {
-                            frappe.msgprint(__('Amount must be greater than zero'));
-                            return;
-                        }
-                        if (entered_amt > max_amt + 0.01) {
-                            frappe.msgprint(__('Amount cannot exceed remaining balance of {0}', [max_amt]));
-                            return;
-                        }
-                        frappe.call({
-                            method: 'frappe_pdc.pdc.clear_pdc',
-                            args: {
+                if (actions.clear) {
+                    frm.add_custom_button(__('Clear Cheque'), function () {
+                        frappe.prompt([
+                            { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', precision: actions.precision, default: actions.remaining, reqd: 1 },
+                            { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Link', options: 'Mode of Payment', reqd: 1 },
+                            { label: __('Clearance Posting Date'), fieldname: 'posting_date', fieldtype: 'Date', default: frappe.datetime.get_today(), reqd: 1 }
+                        ], async (values) => {
+                            await frappe.xcall('frappe_pdc.pdc.clear_pdc', {
                                 payment_entry_name: frm.doc.payment_entry,
-                                clear_amount: entered_amt,
-                                mode_of_payment: values.mode_of_payment
-                            },
-                            callback: function (r) {
-                                if (!r.exc) {
-                                    frappe.show_alert({ message: __('Clearance Processed'), indicator: 'green' });
-                                    frm.reload_doc();
-                                }
-                            }
-                        });
-                    }, __('Clearing Amount'), __('Submit'));
-                }, __('Actions'));
+                                clear_amount: values.amt,
+                                mode_of_payment: values.mode_of_payment,
+                                posting_date: values.posting_date
+                            }, 'POST', { freeze: true });
+                            frappe.show_alert({ message: __('Clearance Processed'), indicator: 'green' });
+                            frm.reload_doc();
+                        }, __('Clear Cheque'), __('Submit'));
+                    }, __('Actions'));
+                }
 
-                frm.add_custom_button(__('Handover to Supplier'), function () {
-                    frappe.prompt([
-                        { label: __('Supplier'), fieldname: 'supplier', fieldtype: 'Link', options: 'Supplier', reqd: 1 },
-                        { label: __('Handover Date'), fieldname: 'date', fieldtype: 'Date', default: frappe.datetime.get_today(), reqd: 1 }
-                    ], (values) => {
-                        frappe.call({
-                            method: 'frappe_pdc.pdc.handover_pdc',
-                            args: {
-                                payment_entry_name: frm.doc.payment_entry,
-                                supplier: values.supplier,
-                                handover_date: values.date
-                            },
-                            callback: function (r) {
-                                if (!r.exc) {
-                                    frappe.show_alert({ message: __('Handed Over to Supplier'), indicator: 'blue' });
-                                    frm.reload_doc();
+                if (actions.handover) {
+                    frm.add_custom_button(__('Handover to Supplier'), function () {
+                        frappe.prompt([
+                            { label: __('Supplier'), fieldname: 'supplier', fieldtype: 'Link', options: 'Supplier', reqd: 1 },
+                            { label: __('Handover Date'), fieldname: 'date', fieldtype: 'Date', default: frappe.datetime.get_today(), reqd: 1 }
+                        ], (values) => {
+                            frappe.call({
+                                method: 'frappe_pdc.pdc.handover_pdc',
+                                args: {
+                                    payment_entry_name: frm.doc.payment_entry,
+                                    supplier: values.supplier,
+                                    handover_date: values.date
+                                },
+                                callback: function (r) {
+                                    if (!r.exc) {
+                                        frappe.show_alert({ message: __('Handed Over to Supplier'), indicator: 'blue' });
+                                        frm.reload_doc();
+                                    }
                                 }
-                            }
-                        });
-                    }, __('Handover Details'), __('Submit'));
-                }, __('Actions'));
+                            });
+                        }, __('Handover Details'), __('Submit'));
+                    }, __('Actions'));
+                }
 
-                frm.add_custom_button(__('Mark as Bounced'), function () {
-                    frappe.prompt([
-                        { label: __('Bounced Reason'), fieldname: 'reason', fieldtype: 'Small Text', reqd: 1 }
-                    ], (values) => {
-                        frappe.call({
-                            method: 'frappe_pdc.pdc.mark_pdc_bounced',
-                            args: {
-                                payment_entry_name: frm.doc.payment_entry,
-                                reason: values.reason
-                            },
-                            callback: function (r) {
-                                if (!r.exc) {
-                                    const status = r.message?.customer_payment_entry || '';
-                                    const msg = status ? __('PDC updated ({0})', [status]) : __('PDC status updated');
-                                    frappe.show_alert({ message: msg, indicator: 'red' });
-                                    frm.reload_doc();
+                if (actions.bounce) {
+                    frm.add_custom_button(__('Mark as Bounced'), function () {
+                        frappe.prompt([
+                            { label: __('Bounced Reason'), fieldname: 'reason', fieldtype: 'Small Text', reqd: 1 }
+                        ], (values) => {
+                            frappe.call({
+                                method: 'frappe_pdc.pdc.mark_pdc_bounced',
+                                args: {
+                                    payment_entry_name: frm.doc.payment_entry,
+                                    reason: values.reason
+                                },
+                                callback: function (r) {
+                                    if (!r.exc) {
+                                        const status = r.message?.customer_payment_entry || '';
+                                        const msg = status ? __('PDC updated ({0})', [status]) : __('PDC status updated');
+                                        frappe.show_alert({ message: msg, indicator: 'red' });
+                                        frm.reload_doc();
+                                    }
                                 }
-                            }
-                        });
-                    }, __('Reason for Bouncing'), __('Submit'));
-                }, __('Actions'));
+                            });
+                        }, __('Reason for Bouncing'), __('Submit'));
+                    }, __('Actions'));
+                }
             }
 
             if (['Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status) && !frm.doc.replacement_pdc) {

@@ -1,112 +1,76 @@
 frappe.ui.form.on('Payment Entry', {
-    refresh: function (frm) {
+    refresh: async function (frm) {
         frm.set_df_property('pdc_status', 'read_only', 1);
-        frm.toggle_display('pdc_status', !!frm.doc.is_pdc);
-        if (!frm.doc.is_pdc) {
+        frm.toggle_display('pdc_status', Boolean(frm.doc.is_pdc || frm.doc.pdc_status));
+        if (!frm.doc.is_pdc && !frm.doc.pdc_status) {
             frm.set_intro('');
             frm.set_df_property('pdc_status', 'description', '');
         }
 
-        // --- PDC REGISTRATION WORKFLOW ---
-        if (frm.doc.is_pdc && frm.doc.docstatus === 0) {
-            // Hide custom Register PDC if it was accidentally added as custom button
-            frm.remove_custom_button(__('Register PDC'));
+        if (frm.is_new() || (!frm.doc.is_pdc && !frm.doc.pdc_status)) {
+            return;
+        }
 
-            if (!frm.is_new()) {
-                set_pdc_primary_action(frm);
-            } else {
-                // If new, ensure primary action is 'Save' (standard Frappe behavior)
-                // but we hide Submit precisely when it would normally show up.
+        const docname = frm.doc.name;
+        const pdc = await frappe.xcall('frappe_pdc.pdc.get_pdc_name', { payment_entry: docname });
+        if (frm.doc.name !== docname) {
+            return;
+        }
+
+        if (frm.doc.docstatus === 0 && !frm.is_dirty()) {
+            if (pdc) {
+                frm.page.set_primary_action(__('View PDC Record'), () => frappe.set_route('Form', 'PDC', pdc));
+            } else if (frm.doc.is_pdc) {
+                set_pdc_registration_action(frm);
             }
         }
 
-        if (frm.doc.is_pdc) {
-            const status_colors = {
-                "Pending": "orange",
-                "Ready for Clearance": "yellow",
-                "Handed Over": "blue",
-                "Partially Cleared": "purple",
-                "Partially Bounced": "orange",
-                "Cleared": "green",
-                "Bounced": "red"
-            };
+        if (!pdc) {
+            return;
+        }
 
-            if (frm.doc.pdc_status) {
-                frm.set_df_property('pdc_status', 'description',
-                    `<b style="color:${status_colors[frm.doc.pdc_status] || 'black'}">${frm.doc.pdc_status}</b>`);
-                frm.set_intro(
-                    __('PDC Status: {0}', [`<b style="color:${status_colors[frm.doc.pdc_status] || 'black'}">${__(frm.doc.pdc_status)}</b>`]),
-                    status_colors[frm.doc.pdc_status] || 'blue'
-                );
-            }
+        frm.add_custom_button(__('View PDC Record'), () => frappe.set_route('Form', 'PDC', pdc), __('Links'));
+        if (!frm.doc.is_pdc || frm.doc.docstatus !== 0) {
+            return;
+        }
 
-            // Show Link if PDC exists
-            frappe.call({
-                method: 'frappe_pdc.pdc.get_pdc_name',
-                args: { payment_entry: frm.doc.name },
-                callback: function (r) {
-                    if (r.message && !frm.custom_buttons[__('View PDC Record')]) {
-                        frm.add_custom_button(__('View PDC Record'), function () {
-                            frappe.set_route('Form', 'PDC', r.message);
-                        }, __('Links'));
-
-                        if (!['Cleared', 'Bounced', 'Partially Bounced'].includes(frm.doc.pdc_status)) {
-                            frm.add_custom_button(__('Clear PDC'), function () {
-                                frappe.db.get_value('PDC', r.message, ['amount', 'cleared_amount'], (pdc) => {
-                                    let rem = flt(pdc.amount) - flt(pdc.cleared_amount);
-                                    frappe.prompt([
-                                        { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', default: rem, reqd: 1 },
-                                        { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Link', options: 'Mode of Payment', reqd: 1 }
-                                    ], (values) => {
-                                        let entered_amt = flt(values.amt);
-                                        if (entered_amt <= 0) {
-                                            frappe.msgprint(__('Amount must be greater than zero'));
-                                            return;
-                                        }
-                                        if (entered_amt > rem + 0.01) {
-                                            frappe.msgprint(__('Amount cannot exceed remaining balance of {0}', [rem]));
-                                            return;
-                                        }
-                                        frappe.call({
-                                            method: 'frappe_pdc.pdc.clear_pdc',
-                                            args: {
-                                                payment_entry_name: frm.doc.name,
-                                                clear_amount: entered_amt,
-                                                mode_of_payment: values.mode_of_payment
-                                            },
-                                            callback: function (r) {
-                                                if (!r.exc) {
-                                                    frappe.show_alert({ message: __('PDC Cleared'), indicator: 'green' });
-                                                    frm.reload_doc();
-                                                }
-                                            }
-                                        });
-                                    }, __('Clearing Amount'), __('Submit'));
-                                });
-                            }, __('Actions'));
-
-                            frm.add_custom_button(__('Mark as Bounced'), function () {
-                                frappe.prompt([
-                                    { label: __('Bounced Reason'), fieldname: 'reason', fieldtype: 'Small Text', reqd: 1 }
-                                ], (values) => {
-                                    frappe.call({
-                                        method: 'frappe_pdc.pdc.mark_pdc_bounced',
-                                        args: { payment_entry_name: frm.doc.name, reason: values.reason },
-                                        callback: function (r) {
-                                            if (!r.exc) {
-                                                const status = r.message?.customer_payment_entry || '';
-                                                const msg = status ? __('PDC updated ({0})', [status]) : __('PDC status updated');
-                                                frappe.show_alert({ message: msg, indicator: 'red' });
-                                                frm.reload_doc();
-                                            }
-                                        }
-                                    });
-                                }, __('Reason for Bouncing'), __('Submit'));
-                            }, __('Actions'));
-                        }
-                    }
-                }
-            });
+        const actions = await frappe.xcall('frappe_pdc.pdc.get_pdc_actions', { pdc_name: pdc });
+        if (frm.doc.name !== docname) {
+            return;
+        }
+        if (actions.clearance_block) {
+            frm.set_intro(frappe.utils.escape_html(actions.clearance_block), 'orange');
+        }
+        if (actions.clear) {
+            frm.add_custom_button(__('Clear PDC'), () => {
+                frappe.prompt([
+                    { label: __('Amount to Clear'), fieldname: 'amt', fieldtype: 'Currency', precision: actions.precision, default: actions.remaining, reqd: 1 },
+                    { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Link', options: 'Mode of Payment', reqd: 1 },
+                    { label: __('Clearance Posting Date'), fieldname: 'posting_date', fieldtype: 'Date', default: frappe.datetime.get_today(), reqd: 1 }
+                ], async (values) => {
+                    await frappe.xcall('frappe_pdc.pdc.clear_pdc', {
+                        payment_entry_name: docname,
+                        clear_amount: values.amt,
+                        mode_of_payment: values.mode_of_payment,
+                        posting_date: values.posting_date
+                    }, 'POST', { freeze: true });
+                    frappe.show_alert({ message: __('Clearance Processed'), indicator: 'green' });
+                    frm.reload_doc();
+                }, __('Clear Cheque'), __('Submit'));
+            }, __('Actions'));
+        }
+        if (actions.bounce) {
+            frm.add_custom_button(__('Mark as Bounced'), () => {
+                frappe.prompt([
+                    { label: __('Bounced Reason'), fieldname: 'reason', fieldtype: 'Small Text', reqd: 1 }
+                ], async (values) => {
+                    await frappe.xcall('frappe_pdc.pdc.mark_pdc_bounced', {
+                        payment_entry_name: docname, reason: values.reason
+                    }, 'POST', { freeze: true });
+                    frappe.show_alert({ message: __('PDC status updated'), indicator: 'red' });
+                    frappe.set_route('Form', 'PDC', pdc);
+                }, __('Reason for Bouncing'), __('Submit'));
+            }, __('Actions'));
         }
     },
     validate: function (frm) {
@@ -159,50 +123,19 @@ frappe.ui.form.on('Payment Entry', {
     }
 });
 
-function set_pdc_primary_action(frm) {
-    frappe.call({
-        method: 'frappe_pdc.pdc.get_pdc_name',
-        args: { payment_entry: frm.doc.name },
-        callback: function (r) {
-            const existing_pdc = r.message;
+function set_pdc_registration_action(frm) {
+    frm.page.set_primary_action(__('Register PDC'), async () => {
+        if (frm.is_dirty()) {
+            frappe.msgprint(__('Please save the Payment Entry before registering PDC.'));
+            return;
+        }
 
-            if (existing_pdc) {
-                frm.page.set_primary_action(__('View PDC Record'), function () {
-                    frappe.set_route('Form', 'PDC', existing_pdc);
-                });
-                return;
-            }
-
-            frm.page.set_primary_action(__('Register PDC'), function () {
-                if (frm.is_dirty()) {
-                    frappe.msgprint(__('Please save the Payment Entry before registering PDC.'));
-                    return;
-                }
-
-                // Re-check at click time to prevent duplicate registration.
-                frappe.call({
-                    method: 'frappe_pdc.pdc.get_pdc_name',
-                    args: { payment_entry: frm.doc.name },
-                    callback: function (check) {
-                        if (check.message) {
-                            frappe.set_route('Form', 'PDC', check.message);
-                            return;
-                        }
-
-                        frappe.call({
-                            method: 'frappe_pdc.pdc.register_pdc',
-                            args: { payment_entry_name: frm.doc.name },
-                            callback: function (register_resp) {
-                                if (register_resp.message) {
-                                    frappe.show_alert({ message: __('PDC Registered Successfully'), indicator: 'green' });
-                                    frm.reload_doc();
-                                    frappe.set_route('Form', 'PDC', register_resp.message);
-                                }
-                            }
-                        });
-                    }
-                });
-            });
+        const pdc = await frappe.xcall('frappe_pdc.pdc.register_pdc', {
+            payment_entry_name: frm.doc.name
+        }, 'POST', { freeze: true });
+        if (pdc) {
+            frappe.show_alert({ message: __('PDC Registered Successfully'), indicator: 'green' });
+            frappe.set_route('Form', 'PDC', pdc);
         }
     });
 }
