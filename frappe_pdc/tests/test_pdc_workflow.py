@@ -255,6 +255,18 @@ class TestPDCWorkflow(IntegrationTestCase):
         self.assertEqual(entry.docstatus, 1)
         self.assertEqual(invoice.reload().outstanding_amount, 0)
 
+    def test_future_cheque_actions_explain_maturity(self):
+        invoice = self.make_invoice("Sales Invoice", 20)
+        entry = self.make_receipt(invoice)
+        entry.reference_date = add_days(today(), 1)
+        entry.save()
+        pdc_name = register_pdc(entry.name)
+        approve_pdc_clearance(pdc_name=pdc_name)
+
+        actions = get_pdc_actions(pdc_name)
+        self.assertFalse(actions["clear"])
+        self.assertIn("before its reference date", actions["clearance_block"])
+
     def test_replacement_clears_only_the_bounced_balance(self):
         invoice = self.make_invoice("Sales Invoice", 100)
         entry = self.make_receipt(invoice)

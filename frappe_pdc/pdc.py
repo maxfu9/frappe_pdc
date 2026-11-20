@@ -1,7 +1,7 @@
 from math import isfinite
 
 import frappe
-from frappe.utils import add_days, escape_html, flt, getdate, now_datetime, today
+from frappe.utils import add_days, escape_html, flt, formatdate, getdate, now_datetime, today
 from frappe import _
 
 PDC_MANAGER_DEFAULT_ROLES = ("Accounts Manager", "System Manager")
@@ -645,7 +645,7 @@ def _clearance_block_reason(pdc_doc, clearance_date):
         return _("Clearance Posting Date cannot be in the future.")
     if pdc_doc.reference_date and clearance_date < getdate(pdc_doc.reference_date) and not _settings_flag("allow_early_clearance"):
         return _("This cheque cannot be cleared before its reference date of {0}.").format(
-            frappe.format_date(pdc_doc.reference_date)
+            formatdate(pdc_doc.reference_date)
         )
     if pdc_doc.handover_date and clearance_date < getdate(pdc_doc.handover_date):
         return _("Clearance Posting Date cannot be before the supplier handover date.")
@@ -1325,7 +1325,7 @@ def _pdc_notice_message(pdc_doc, intro):
                 <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>PDC</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.name)}</td></tr>
                 <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Customer</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.customer)}</td></tr>
                 <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Cheque No</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.cheque_no or 'N/A')}</td></tr>
-                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Reference Date</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(frappe.format_date(pdc_doc.reference_date))}</td></tr>
+                <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Reference Date</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(formatdate(pdc_doc.reference_date))}</td></tr>
                 <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Status</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(pdc_doc.pdc_status)}</td></tr>
                 <tr><td style="padding: 8px; border: 1px solid #ddd;"><b>Amount</b></td><td style="padding: 8px; border: 1px solid #ddd;">{_html(frappe.format_value(pdc_doc.amount, {'fieldtype': 'Currency'}))}</td></tr>
             </table>
@@ -1791,7 +1791,7 @@ def notify_customer(pdc):
             <p>{_('Dear Valued Customer,')}</p>
             <p>{_('This is a polite reminder that your cheque')} <b>#{_html(pdc.cheque_no or '')}</b> {_('for the amount of')}
             <b>{_html(frappe.format_value(pdc.amount, {'fieldtype': 'Currency'}))}</b> {_('is dated today,')}
-            <b>{_html(frappe.format_date(pdc.reference_date))}</b>, {_('and will be presented for clearance.')}</p>
+            <b>{_html(formatdate(pdc.reference_date))}</b>, {_('and will be presented for clearance.')}</p>
             <p>{_('Please ensure sufficient funds are available in your account.')}</p>
             <p>{_('Thank you for your business!')}</p>
         </div>
