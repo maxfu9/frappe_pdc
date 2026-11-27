@@ -1,7 +1,8 @@
 frappe.ui.form.on('Payment Entry', {
     refresh: async function (frm) {
+        align_accounting_links(frm);
         frm.set_df_property('pdc_status', 'read_only', 1);
-        frm.toggle_display('pdc_status', Boolean(frm.doc.is_pdc || frm.doc.pdc_status));
+        frm.toggle_display('pdc_status', Boolean(frm.doc.is_pdc));
         if (!frm.doc.is_pdc && !frm.doc.pdc_status) {
             frm.set_intro('');
             frm.set_df_property('pdc_status', 'description', '');
@@ -122,6 +123,30 @@ frappe.ui.form.on('Payment Entry', {
         }
     }
 });
+
+function align_accounting_links(frm) {
+    const area = frm.dashboard?.transactions_area?.[0];
+    const journal = area?.querySelector('.document-link[data-doctype="Journal Entry"]');
+    const bank = area?.querySelector('.document-link[data-doctype="Bank Transaction"]');
+    if (!journal || !bank) return;
+
+    const accounting = journal.parentElement;
+    const bankGroup = bank.parentElement;
+    journal.after(bank);
+    if (bankGroup !== accounting && !bankGroup.querySelector('.document-link')) {
+        bankGroup.remove();
+    }
+
+    accounting.classList.replace('col-md-4', 'col-md-8');
+    Object.assign(accounting.style, {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))',
+        columnGap: '16px',
+        maxWidth: 'min(100%, 560px)',
+    });
+    const heading = accounting.querySelector(':scope > .form-link-title');
+    if (heading) heading.style.gridColumn = '1 / -1';
+}
 
 function set_pdc_registration_action(frm) {
     frm.page.set_primary_action(__('Register PDC'), async () => {

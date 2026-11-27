@@ -18,6 +18,7 @@
         "fieldtype": "Select",
         "options": "Pending\nReady for Clearance\nApproved for Clearance\nHanded Over\nPartially Cleared\nPartially Bounced\nCleared\nBounced",
         "insert_after": "is_pdc",
+        "depends_on": "is_pdc",
         "read_only": 1,
         "module": "Frappe PDC"
     }
