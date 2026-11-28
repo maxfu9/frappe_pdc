@@ -27,7 +27,7 @@
       "hidden": 0,
       "is_query_report": 0,
       "label": "Operations",
-      "link_count": 4,
+      "link_count": 5,
       "onboard": 0,
       "type": "Card Break"
     },
@@ -57,6 +57,16 @@
       "label": "PDC Clearance Queue",
       "link_count": 0,
       "link_to": "PDC Clearance Queue",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "PDC Reconciliation",
+      "link_count": 0,
+      "link_to": "PDC Reconciliation",
       "link_type": "Report",
       "onboard": 0,
       "type": "Link"

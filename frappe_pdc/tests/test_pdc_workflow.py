@@ -390,3 +390,61 @@ class TestPDCWorkflow(IntegrationTestCase):
         if approve:
             approve_pdc_clearance(pdc_name=pdc.name)
         return pdc
+
+    def test_reconciliation_tracks_native_bank_statement_matches(self):
+        invoice = self.make_invoice("Sales Invoice", 50)
+        pdc = self.register_queue_cheque(invoice, bank=True, approve=True)
+        clear_pdc(pdc.payment_entry)
+        journal = pdc.reload().last_clearance_journal_entry
+        report = frappe.get_doc("Report", "PDC Reconciliation")
+        filters = {"company": self.company.name, "pdc": pdc.name}
+        _, rows = report.execute_module(filters)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["bank_status"], rows[0]["bank_posted"]), ("Awaiting Statement Match", 50))
+        self.assertFalse(rows[0]["issues"])
+
+        suffix = frappe.generate_hash(length=8)
+        bank = frappe.get_doc({"doctype": "Bank", "bank_name": f"PDC QA Bank {suffix}"}).insert()
+        bank_account = frappe.get_doc({
+            "doctype": "Bank Account",
+            "account_name": f"PDC QA Statement Account {suffix}",
+            "bank": bank.name,
+            "is_company_account": 1,
+            "company": self.company.name,
+            "account": self.bank_account,
+        }).insert()
+        for deposit, reference in ((30, "QA-DEPOSIT-1"), (20, "QA-DEPOSIT-2")):
+            transaction = frappe.get_doc({
+                "doctype": "Bank Transaction",
+                "company": self.company.name,
+                "bank_account": bank_account.name,
+                "date": self.clearance_date,
+                "currency": "USD",
+                "deposit": deposit,
+                "reference_number": reference,
+            }).insert().submit()
+            transaction.add_payment_entries([{"payment_doctype": "Journal Entry", "payment_name": journal}])
+            transaction.save()
+            if deposit == 30:
+                _, rows = report.execute_module(filters)
+                self.assertEqual((rows[0]["bank_status"], rows[0]["bank_matched"]), ("Partially Matched", 30))
+
+        _, rows = report.execute_module(filters)
+        self.assertEqual(rows, [])
+        _, rows = report.execute_module({**filters, "exceptions_only": 0})
+        self.assertEqual((rows[0]["bank_status"], rows[0]["bank_matched"]), ("Statement Matched", 50))
+        self.assertIn("QA-DEPOSIT-1", rows[0]["statement_references"])
+        self.assertIn("QA-DEPOSIT-2", rows[0]["statement_references"])
+
+    def test_reconciliation_flags_differences_with_posted_vouchers(self):
+        invoice = self.make_invoice("Sales Invoice", 100)
+        pdc = self.register_queue_cheque(invoice, bank=True, approve=True)
+        clear_pdc(pdc.payment_entry, 40)
+        frappe.db.set_value("PDC", pdc.name, "cleared_amount", 45)
+
+        report = frappe.get_doc("Report", "PDC Reconciliation")
+        _, rows = report.execute_module({"company": self.company.name, "pdc": pdc.name})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["cleared_amount"], rows[0]["customer_posted"], rows[0]["bank_posted"]), (45, 40, 40))
+        self.assertIn("Customer payments differ", rows[0]["issues"])
+        self.assertIn("Bank postings differ", rows[0]["issues"])
